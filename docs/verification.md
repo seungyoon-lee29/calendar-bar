@@ -175,3 +175,12 @@ Runtime QA의 `~/Library/Application Support/local.ian.CalendarBar.runtime.qa/qa
 Cmd-Q로 QA가 종료되지 않아 정확한 QA 실행 경로의 PID에 SIGTERM을 보냈다. 제한 실행 세션 39609는 exit 0, QA_PROCESS_ABSENT로 종료됐으며 최종 읽기 보고에서 OS pending/delivered 0/0을 확인했다. 시험용 알림 허용은 원래 꺼짐으로 복원했다. 원본 일정·실사용 설치본 파일·로그인 항목·다른 앱 권한은 변경하지 않았다.
 
 이번 실제 권한 시험은 시스템 알림 허용의 회수다. 합성 캘린더 backend를 사용했으므로 실제 Calendar fullAccess 회수 검증은 수행하지 않았다. 최초 알림 권한 요청 오류 원인, 실제 계정의 분리된 반복 예외 조합, macOS 14 실행, 재로그인·재부팅 지속성은 제한으로 유지한다. 소스는 앞서 전체 검증한 `185d998`과 같으며 Swift 114개·Python 9개·전체 exit 0 기록을 동일 소스의 근거로 사용한다. 이번 후속 변경은 문서뿐이므로 링크·참조와 diff를 검사했으며 새 전체 테스트 실행으로 보고하지 않는다.
+
+
+### main 병합과 실사용 설치본 교체
+
+2026-09-28 사용자가 main 병합과 실사용 앱 교체를 승인했다. origin/main의 `1a65f57` README 제목 수정은 기능 브랜치에 충돌 없이 보존·통합했고 main에는 no-ff merge `1503248`로 반영했다. 제품 코드는 `f0f7d79`와 같아 앞선 Swift 114개·Python 9개·전체 exit 0의 동일 소스 검증을 유지한다. 원격 push는 수행하지 않았다.
+
+기존 `/Users/ian/Applications/CalendarBar.app`은 `.dryforge/backup/CalendarBar-before-reminders-20260928-221151.zip`에 권한 0600으로 백업했다. 기존 정상 앱 PID 61441을 정상 종료한 뒤 검증된 빌드로 교체했고, 빌드 실행 파일과 설치 실행 파일의 SHA-256 내부 동등성 true 및 codesign 검증 exit 0을 확인했다. 정리된 환경으로 open 실행 후 새 정상 앱 PID 66871 한 개가 실행됐다.
+
+ControlCenter 로그는 PID 66871만 필터링한 JSON에서 메타데이터를 확인했다. tracking 1·displayableCreated 1·itemAdded 1·blocked 0, 조회 exit 0이었다. 이는 새 설치본의 실행과 메뉴 등록 증거이며 개인 일정 화면·캘린더 권한 유지 확인과는 구별한다. 개인 일정 화면은 조회하지 않았다. 앞서 명시한 실제 계정 반복 예외·실제 캘린더 권한 회수·최초 알림 권한 요청 원인·macOS 14·재로그인 등의 한계는 유지한다. 이번 갱신은 설치 결과 문서화이며 문서 링크·diff를 확인했다.
