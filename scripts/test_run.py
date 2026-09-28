@@ -24,6 +24,7 @@ pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))
 subprocess.Popen([sys.executable, '-c', sys.argv[3], sys.argv[2]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 while not pathlib.Path(sys.argv[2]).exists():
     time.sleep(0.01)
+print('FIXTURE_READY', flush=True)
 if sys.argv[4] == 'timeout':
     time.sleep(60)
 print('parent output', flush=True)
@@ -57,6 +58,24 @@ class GroupProbeTests(unittest.TestCase):
 
 
 class QAPreflightTests(unittest.TestCase):
+    def test_launcher_passes_only_standard_environment(self):
+        import plistlib
+        import runpy
+        info = {'CFBundleIdentifier': 'local.ian.CalendarBar.qa', 'CFBundleExecutable': 'CalendarBar'}
+        standard = {'PATH': '/usr/bin:/bin', 'HOME': '/tmp/fake-home', 'USER': 'fake-user', 'LOGNAME': 'fake-user', 'TMPDIR': '/tmp/fake-temp', 'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'UTF-8'}
+        inherited = dict(standard, SECRET_VARIABLE='fake-sentinel', API_KEY='fake-key', DYLD_INSERT_LIBRARIES='fake-injection')
+        with tempfile.TemporaryDirectory() as directory:
+            app = pathlib.Path(directory) / 'QA.app'
+            (app / 'Contents').mkdir(parents=True)
+            (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+            with patch.object(sys, 'argv', ['run_qa.py', '1', str(app)]), patch.dict(os.environ, inherited, clear=True), patch('qa_preflight.preflight'), patch('subprocess.Popen') as launch, patch('subprocess.check_output', return_value=''):
+                launch.return_value.wait.return_value = 0
+                with self.assertRaises(SystemExit) as result:
+                    runpy.run_path(str(RUNNER.with_name('run_qa.py')))
+                self.assertEqual(result.exception.code, 0)
+                self.assertEqual(launch.call_args.kwargs.get('env'), standard)
+                self.assertNotIn('SECRET_VARIABLE', launch.call_args.kwargs.get('env', {}))
+
     def test_inventory_contract(self):
         from qa_preflight import validate
         app = pathlib.Path('/tmp/qa-preflight/QA.app')
@@ -108,10 +127,14 @@ class RunnerTests(unittest.TestCase):
             child_path = pathlib.Path(directory) / "child"
             try:
                 result = subprocess.run(
-                    [sys.executable, str(RUNNER), "1" if mode == "timeout" else "10",
+                    [sys.executable, str(RUNNER), "5" if mode == "timeout" else "10",
                      sys.executable, "-c", PARENT, str(parent_path), str(child_path), CHILD, mode],
-                    capture_output=True, text=True, timeout=15)
+                    capture_output=True, text=True, timeout=25)
                 self.assertEqual(result.returncode, expected, result.stderr)
+                # Under concurrent builds one second can expire before Python's
+                # child startup. Never count that as descendant-cleanup coverage.
+                self.assertIn("FIXTURE_READY", result.stdout, "fixture did not become ready before runner deadline")
+                self.assertTrue(child_path.is_file(), "fixture child PID was not recorded")
                 child = int(child_path.read_text())
                 deadline = time.monotonic() + 2
                 while alive(child) and time.monotonic() < deadline:
