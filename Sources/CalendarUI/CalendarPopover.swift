@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import CalendarCore
 import CalendarAccess
+import CalendarNotifications
 import MenuBar
 import ServiceManagement
 
@@ -18,7 +19,11 @@ import ServiceManagement
     func cancelPendingLoginRegistration() { login.setEnabled(false) }
     var body: some View {
         VStack(spacing: 0) {
-            if model.showingSettings { settings } else {
+            if model.isResolvingReminder {
+                VStack(spacing: 12) { ProgressView(); Text("일정을 확인하는 중…").font(.caption) }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            else if model.canDisplayReminder, let reminders = model.reminders { ReminderEditorView(model: model, reminders: reminders) }
+            else if model.showingSettings { settings } else {
                 searchHeader
                 if let message = model.navigationMessage {
                     Text(message).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.bottom, 8)
@@ -31,6 +36,9 @@ import ServiceManagement
         .frame(width: 340, height: 600)
         .background(Color(nsColor: .windowBackgroundColor))
         .onDisappear { resetPaging() }
+        .onChange(of: model.access.permission) { _, _ in model.clearInaccessibleEditor() }
+        .onChange(of: model.access.calendars) { _, _ in model.clearInaccessibleEditor() }
+        .onChange(of: model.access.selectedCalendarIDs) { _, _ in model.clearInaccessibleEditor() }
         .onChange(of: model.presentationID) { _, _ in resetPaging() }
         .onChange(of: model.calendar.displayedMonth) { _, _ in resetPaging() }
     }
@@ -141,7 +149,7 @@ import ServiceManagement
                 ScrollView {
                     LazyVStack(spacing: 12) {
                         ForEach(model.selectedEvents) { event in
-                            EventDisplayRow(event: event, time: model.timeLabel(event), highlighted: model.highlightedEventID == event.id, action: nil, reminder: { model.selectedReminderEvent = event }).id(event.id)
+                            EventDisplayRow(event: event, time: model.timeLabel(event), highlighted: model.highlightedEventID == event.id, action: nil, reminder: { model.editReminder(event) }, delivery: model.reminders?.snapshot(for: event)).id(event.id)
                         }
                     }.padding(.horizontal, 20).padding(.bottom, 12)
                 }
@@ -214,7 +222,7 @@ import ServiceManagement
                                 ForEach(model.searchResults) { event in
                                     EventDisplayRow(event: event, time: resultTime(event), highlighted: false,
                                         action: { Task { await model.activate(event, interval: model.searchInterval) } },
-                                        reminder: { model.selectedReminderEvent = event })
+                                        reminder: { model.editReminder(event) }, delivery: model.reminders?.snapshot(for: event))
                                 }
                             }.padding(.vertical, 5)
                         }
@@ -238,7 +246,7 @@ import ServiceManagement
                             ForEach(group.events) { event in
                                 EventDisplayRow(event: event, time: agendaTime(event, day: group.day), highlighted: false,
                                     action: { Task { await model.activate(event, interval: model.agendaInterval) } },
-                                    reminder: { model.selectedReminderEvent = event })
+                                    reminder: { model.editReminder(event) }, delivery: model.reminders?.snapshot(for: event))
                             }
                             Divider()
                         }
@@ -259,6 +267,7 @@ import ServiceManagement
         return event.start < day ? "진행 중" : model.formatted(event.start, "HH:mm")
     }
     private var settings: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Button { model.showingSettings = false } label: { Label("뒤로", systemImage: "chevron.left") }.buttonStyle(.plain)
@@ -269,7 +278,7 @@ import ServiceManagement
             Text("표시할 캘린더").font(.system(size: 12, weight: .semibold))
             if model.access.calendars.isEmpty { accessMessage.frame(height: 150) }
             else {
-                ScrollView {
+                Group {
                     VStack(spacing: 12) {
                         ForEach(model.access.calendars) { item in
                             Toggle(isOn: Binding(get: { model.access.selectedCalendarIDs.contains(item.id) }, set: { enabled in
@@ -292,6 +301,7 @@ import ServiceManagement
                 }
             }
             Divider()
+            if let reminders = model.reminders { ReminderSettingsView(reminders: reminders); Divider() }
             Toggle("로그인 시 실행", isOn: loginToggleBinding).toggleStyle(.switch).font(.system(size: 12))
             if login.state == .requiresApproval {
                 Text("시스템 설정에서 로그인 항목을 승인해 주세요.").font(.caption).foregroundStyle(.secondary)
@@ -306,6 +316,7 @@ import ServiceManagement
             Divider()
             Button("Calendar Bar 종료") { NSApplication.shared.terminate(nil) }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(.secondary)
         }.padding(20)
+        }
     }
     private func openSettings(_ url: String) { if let url = URL(string: url) { NSWorkspace.shared.open(url) } }
 }
@@ -319,12 +330,17 @@ extension Color {
     let highlighted: Bool
     let action: (() -> Void)?
     let reminder: () -> Void
+    let delivery: ReminderDeliverySnapshot?
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if let action { Button(action: action) { content }.buttonStyle(.plain) }
             else { content }
-            Button(action: reminder) { Image(systemName: "bell").foregroundStyle(.secondary) }
-                .buttonStyle(.plain).accessibilityLabel("알림 설정: " + event.title)
+            Button(action: reminder) {
+                Image(systemName: delivery?.scheduled ?? 0 > 0 ? "bell.fill" : delivery?.desiredEnabled == true ? "bell.badge" : "bell")
+                    .foregroundStyle(delivery?.scheduled ?? 0 > 0 ? Color.accentColor : .secondary)
+            }
+                .buttonStyle(.plain).accessibilityLabel("알림 설정: " + event.title + ", " + (delivery?.state.label ?? "알림 꺼짐"))
+                .help(delivery.map { "\($0.state.label) · 실제 예약 \($0.scheduled)개 · 보류 \($0.deferred)개" } ?? "알림 꺼짐")
         }.padding(4).background(highlighted ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 4))
     }
     private var content: some View {
