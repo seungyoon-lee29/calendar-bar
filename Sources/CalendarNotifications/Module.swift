@@ -121,6 +121,7 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
     public private(set) var snapshots: [UUID: ReminderDeliverySnapshot] = [:]
     public private(set) var eventSnapshots: [EventOccurrence.ID: ReminderDeliverySnapshot] = [:]
     public private(set) var storageError: String?
+    public private(set) var permissionRequestError: String?
     public private(set) var lastScheduled: Date?
     public var scheduled: Int { snapshots.values.reduce(0) { $0 + $1.scheduled } }
     public var deferred: Int { snapshots.values.reduce(0) { $0 + $1.deferred } }
@@ -138,7 +139,7 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
     @ObservationIgnored private var purgeDelivered = false
     @ObservationIgnored private let observesChanges: Bool
     @ObservationIgnored private let sleep: @Sendable (TimeInterval) async throws -> Void
-    public init(access: CalendarAccessController, storage: (any ReminderStorage)? = nil, backend: any ReminderNotificationBackend = SystemReminderNotifications(), context: CalendarContext = CalendarContext(timeZone: .current), now: @escaping @Sendable () -> Date = { Date() }, budget: Int = 48, observeChanges: Bool = true, sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }) {
+    public init(access: CalendarAccessController, storage: (any ReminderStorage)? = nil, backend: any ReminderNotificationBackend = SystemReminderNotifications(), context: CalendarContext = CalendarContext(timeZone: .current), now: @escaping @Sendable () -> Date = { Date() }, budget: Int = 48, observeChanges: Bool = true, sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }) {
         self.access = access; self.storage = storage ?? FileReminderStorage(); self.backend = backend; self.context = context; self.now = now; self.budget = max(0, budget); self.observesChanges = observeChanges; self.sleep = sleep
         do { settings = try self.storage.load().validated() } catch { storageError = "알림 설정을 읽지 못했습니다. 기존 파일을 보존했습니다." }
         purgeDelivered = settings.hideContent
@@ -195,10 +196,14 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
         return snapshots[rule.id] ?? ReminderDeliverySnapshot(desiredEnabled: rule.enabled, state: .updating)
     }
     public func clickLink(token: String) -> ReminderLink? { settings.links[token] }
-    public func requestPermission() async { do { try await backend.requestPermission() } catch {} ; await refresh() }
+    public func requestPermission() async {
+        do { try await backend.requestPermission(); permissionRequestError = nil }
+        catch { permissionRequestError = "알림 권한을 요청하지 못했습니다. 다시 시도해 주세요." }
+        await refresh()
+    }
     public func retry() async {
         if storageError != nil {
-            do { settings = try storage.load().validated(); storageError = nil } catch { return }
+            do { settings = try storage.load().validated(); storageError = nil } catch { /* Reconcile still removes untrusted app requests. */ }
         }
         await refresh()
     }
@@ -221,8 +226,23 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
             await reconcile(generation: processed)
         }
     }
+    private struct OccurrenceKey: Hashable {
+        let calendar: String
+        let item: String
+        let anchor: OccurrenceAnchor
+        init(_ identity: ReminderIdentity, _ anchor: OccurrenceAnchor) {
+            calendar = identity.calendarID; item = identity.confirmedSeriesKey ?? identity.localItemID; self.anchor = anchor
+        }
+        init(_ link: ReminderLink) { self.init(link.identity, link.anchor) }
+    }
+    private func effectiveRule(_ link: ReminderLink, in saved: ReminderSettings) -> ReminderRule? {
+        if link.isRecurring { return saved.rules.resolve(identity: link.identity, anchor: link.anchor) }
+        return saved.rules.rules.last { $0.scope == .thisOccurrence && $0.identity.matchesItem(link.identity) }
+    }
+    private func sanitized(_ request: ReminderRequest, hidden: Bool) -> ReminderRequest {
+        hidden ? ReminderRequest(id: request.id, fireDate: request.fireDate, title: "일정 알림", body: "캘린더에서 일정을 확인하세요.", token: request.token) : request
+    }
     private func reconcile(generation: Int) async {
-        guard storageError == nil else { return }
         armTimer()
         let saved = settings
         eventSnapshots = [:]
@@ -233,122 +253,181 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
         await access.refresh(channel: .reminders, interval: interval)
         guard generation == revision else { return }
         let query = access.snapshot(for: .reminders)
-        let pending = await backend.pending()
+        let pending = await backend.pending().filter { $0.id.hasPrefix(ReminderRequest.prefix) }
+        let delivered = await backend.deliveredIdentifiers().filter { $0.hasPrefix(ReminderRequest.prefix) }
         permission = await backend.permission()
         guard generation == revision else { return }
-        let didPurge = purgeDelivered
-        if purgeDelivered {
-            let delivered = await backend.deliveredIdentifiers()
-            await backend.remove(delivered + pending.map(\.id)); purgeDelivered = false
+
+        // Privacy and explicit intent are decidable without a successful query.
+        // With unreadable correspondence no own request can be proven in scope;
+        // remove own notifications, preserving the unreadable settings file.
+        let cannotUseCalendar = ![.loaded, .failed, .loading].contains(query.state)
+        if storageError != nil || cannotUseCalendar || !permission.canSchedule {
+            await backend.remove(pending.map(\.id) + delivered)
             guard generation == revision else { return }
-        }
-        if query.state == .failed || query.state == .loading {
-            if !permission.canSchedule {
-                let delivered = await backend.deliveredIdentifiers()
-                await backend.remove(pending.map(\.id) + delivered)
-                guard generation == revision else { return }
-            }
             for rule in saved.rules.rules {
-                snapshots[rule.id]?.state = permission.canSchedule ? .failed : .permissionRequired
-                snapshots[rule.id]?.scheduled = permission.canSchedule && !didPurge ? pending.filter { saved.links[$0.token]?.ruleID == rule.id }.count : 0
+                snapshots[rule.id]?.state = !rule.enabled ? .noFuture : !permission.canSchedule || query.state == .connectionRequired ? .permissionRequired : .noFuture
             }
             return
         }
-        var events = query.events
-        var unsafe: Set<UUID> = []
-        var failed: Set<UUID> = []
-        var invalid: Set<UUID> = []
-        if query.state == .loaded {
-            for rule in saved.rules.rules where rule.enabled {
-                if events.contains(where: { saved.rules.resolve(event: $0, context: context)?.id == rule.id }) { continue }
-                let result = await access.resolve(identity: rule.identity, anchor: rule.anchor, isRecurring: saved.recurringRules[rule.id] ?? (rule.identity.confirmedSeriesKey != nil), searchInterval: interval)
-                guard generation == revision else { return }
-                switch result {
-                case .found(let event): events.append(event)
-                case .failed: failed.insert(rule.id)
-                case .needsConfirmation: unsafe.insert(rule.id)
-                case .outsideQuery: if rule.scope == .thisOccurrence { unsafe.insert(rule.id) }
-                case .missing, .outsideSelectedScope, .connectionRequired: invalid.insert(rule.id)
+        let allowedCalendars = query.state == .loaded ? access.effectiveSelectedCalendarIDs : access.selectedCalendarIDs
+        func allowed(_ link: ReminderLink?) -> Bool {
+            guard let link else { return false }
+            return allowedCalendars.contains(link.identity.calendarID) && effectiveRule(link, in: saved)?.enabled == true
+        }
+        let didPurge = purgeDelivered
+        let rejectedPending = pending.filter { !allowed(saved.links[$0.token]) }
+        let rejectedDelivered = delivered.filter { didPurge || !allowed(saved.links[String($0.dropFirst(ReminderRequest.prefix.count))]) }
+        await backend.remove(rejectedPending.map(\.id) + rejectedDelivered + (didPurge ? pending.map(\.id) : []))
+        guard generation == revision else { return }
+        purgeDelivered = false
+        let retained = pending.filter { allowed(saved.links[$0.token]) && $0.fireDate > currentTime }
+        if query.state == .failed || query.state == .loading {
+            // A hide change transforms known requests in place even when fresh
+            // calendar data is unavailable; their saved times remain trustworthy.
+            for old in retained {
+                let request = sanitized(old, hidden: saved.hideContent)
+                if didPurge || !old.matches(request) {
+                    do { try await backend.add(request) } catch { await backend.remove([request.id]) }
+                    if generation != revision { await backend.remove([request.id]); return }
                 }
+            }
+            let evidence = await backend.pending()
+            guard generation == revision else { return }
+            for rule in saved.rules.rules {
+                snapshots[rule.id]?.state = rule.enabled ? .failed : .noFuture
+                snapshots[rule.id]?.scheduled = evidence.filter { request in
+                    guard let link = saved.links[request.token] else { return false }
+                    return effectiveRule(link, in: saved)?.id == rule.id && allowed(link)
+                }.count
+            }
+            return
+        }
+
+        var events = query.events
+        var unsafeRules: Set<UUID> = []
+        var unsafeKeys: Set<OccurrenceKey> = []
+        var failed: Set<UUID> = []
+        var invalidKeys: Set<OccurrenceKey> = []
+        for rule in saved.rules.rules where rule.enabled {
+            if events.contains(where: { saved.rules.resolve(event: $0, context: context)?.id == rule.id }) { continue }
+            let recurring = saved.recurringRules[rule.id] ?? (rule.identity.confirmedSeriesKey != nil)
+            let result = await access.resolve(identity: rule.identity, anchor: rule.anchor, isRecurring: recurring, searchInterval: interval)
+            guard generation == revision else { return }
+            let key = OccurrenceKey(rule.identity, rule.anchor)
+            switch result {
+            case .found(let event): events.append(event)
+            case .failed: failed.insert(rule.id)
+            case .needsConfirmation: unsafeRules.insert(rule.id); unsafeKeys.insert(key)
+            case .outsideQuery:
+                if rule.scope == .thisOccurrence { unsafeRules.insert(rule.id); unsafeKeys.insert(key) }
+            case .missing, .outsideSelectedScope, .connectionRequired: invalidKeys.insert(key)
             }
         }
         var desired: [String: ReminderRequest] = [:]
         var links = saved.links
+        let knownKeys = Set(events.compactMap { event -> OccurrenceKey? in
+            guard let anchor = event.reminderAnchor(context: context) else { return nil }
+            return OccurrenceKey(event.reminderIdentity, anchor)
+        })
+        var unsafeEvents: Set<EventOccurrence.ID> = []
         for event in events {
             if event.isRecurring && event.originalOccurrence == nil {
-                for rule in saved.rules.rules where rule.identity.matchesOccurrenceItem(event.reminderIdentity) { unsafe.insert(rule.id) }
+                let applicable = saved.rules.rules.filter { $0.identity.matchesOccurrenceItem(event.reminderIdentity) && $0.enabled }
+                guard !applicable.isEmpty else { continue }
+                unsafeEvents.insert(event.id)
+                for rule in applicable { unsafeRules.insert(rule.id) }
+                // Unknown anchor cannot erase separately confirmed A/B occurrences.
+                for link in saved.links.values where link.identity.matchesOccurrenceItem(event.reminderIdentity) && !knownKeys.contains(OccurrenceKey(link)) { unsafeKeys.insert(OccurrenceKey(link)) }
+                continue
             }
             guard let rule = saved.rules.resolve(event: event, context: context), rule.enabled else { continue }
-            guard let anchor = event.isRecurring ? event.reminderAnchor(context: context) : Optional(rule.anchor) else { unsafe.insert(rule.id); continue }
+            guard let anchor = event.isRecurring ? event.reminderAnchor(context: context) : Optional(rule.anchor) else { continue }
+            let key = OccurrenceKey(event.reminderIdentity, anchor)
             switch ReminderCalculator.calculate(rule: rule, event: event, now: currentTime, context: context) {
-            case .needsFormatConfirmation, .invalidDate: unsafe.insert(rule.id)
+            case .needsFormatConfirmation, .invalidDate:
+                unsafeRules.insert(rule.id); unsafeKeys.insert(key); unsafeEvents.insert(event.id)
             case .scheduled:
                 for trigger in rule.triggers {
                     guard let single = try? ReminderRule(identity: rule.identity, anchor: rule.anchor, scope: rule.scope, format: rule.format, enabled: true, triggers: [trigger]), case .scheduled(let dates) = ReminderCalculator.calculate(rule: single, event: event, now: currentTime, context: context), let date = dates.first else { continue }
                     let id = ReminderRequest.identifier(identity: event.reminderIdentity, anchor: anchor, trigger: trigger)
-                    let token = id.replacingOccurrences(of: ReminderRequest.prefix, with: "")
+                    let token = String(id.dropFirst(ReminderRequest.prefix.count))
                     links[token] = ReminderLink(identity: event.reminderIdentity, anchor: anchor, isRecurring: event.isRecurring, ruleID: rule.id)
                     let formatter = DateFormatter(); formatter.timeZone = context.calendar.timeZone; formatter.dateStyle = .medium; formatter.timeStyle = event.isAllDay ? .none : .short
-                    desired[id] = ReminderRequest(id: id, fireDate: date, title: saved.hideContent ? "일정 알림" : event.title, body: saved.hideContent ? "캘린더에서 일정을 확인하세요." : formatter.string(from: event.start), token: token)
+                    desired[id] = sanitized(ReminderRequest(id: id, fireDate: date, title: event.title, body: formatter.string(from: event.start), token: token), hidden: saved.hideContent)
                 }
             }
         }
-        // Failure is not deletion. Keep prior requests for an unresolved failed target.
-        for request in pending where saved.links[request.token].map({ failed.contains($0.ruleID) }) == true {
-            desired[request.id] = saved.hideContent ? ReminderRequest(id: request.id, fireDate: request.fireDate, title: "일정 알림", body: "캘린더에서 일정을 확인하세요.", token: request.token) : request
+        for request in retained {
+            guard let link = saved.links[request.token], let rule = effectiveRule(link, in: saved), failed.contains(rule.id) else { continue }
+            desired[request.id] = sanitized(request, hidden: saved.hideContent)
         }
-        desired = desired.filter { links[$0.value.token].map { !unsafe.contains($0.ruleID) } ?? false }
-        if query.state != .loaded || !permission.canSchedule { desired = [:] }
+        desired = desired.filter { entry in
+            guard let link = links[entry.value.token] else { return false }
+            return !unsafeKeys.contains(OccurrenceKey(link)) && !invalidKeys.contains(OccurrenceKey(link))
+        }
         let ordered = desired.values.sorted { $0.fireDate == $1.fireDate ? $0.id < $1.id : $0.fireDate < $1.fireDate }
         let selected = Array(ordered.prefix(budget))
         let selectedIDs = Set(selected.map(\.id))
-        let delivered = await backend.deliveredIdentifiers()
-        let obsoleteDelivered = delivered.filter { id in
+
+        // Delivered occurrences may be outside the future query, and an enabled
+        // parent rule says nothing about an occurrence override or deletion.
+        var obsoleteDelivered: [String] = []
+        var resolvedDelivered: [OccurrenceKey: CalendarEventResolution] = [:]
+        for id in delivered where !rejectedDelivered.contains(id) {
             let token = String(id.dropFirst(ReminderRequest.prefix.count))
-            guard let link = saved.links[token] else { return true }
-            if query.state != .loaded { return true }
-            if failed.contains(link.ruleID) { return false }
-            return invalid.contains(link.ruleID) || unsafe.contains(link.ruleID) || !saved.rules.rules.contains(where: { $0.id == link.ruleID && $0.enabled }) || !access.effectiveSelectedCalendarIDs.contains(link.identity.calendarID)
+            guard let link = saved.links[token], let rule = effectiveRule(link, in: saved), allowed(link) else { obsoleteDelivered.append(id); continue }
+            let key = OccurrenceKey(link)
+            if unsafeKeys.contains(key) || invalidKeys.contains(key) { obsoleteDelivered.append(id); continue }
+            let result: CalendarEventResolution
+            if let cached = resolvedDelivered[key] { result = cached }
+            else {
+                result = await access.resolve(identity: link.identity, anchor: link.anchor, isRecurring: link.isRecurring, searchInterval: interval)
+                guard generation == revision else { return }
+                resolvedDelivered[key] = result
+            }
+            switch result {
+            case .found(let event):
+                if (rule.format == .allDay) != event.isAllDay { obsoleteDelivered.append(id) }
+            case .missing, .needsConfirmation, .outsideSelectedScope, .connectionRequired, .outsideQuery: obsoleteDelivered.append(id)
+            case .failed: break
+            }
         }
         guard generation == revision else { return }
         await backend.remove(pending.map(\.id).filter { !selectedIDs.contains($0) } + obsoleteDelivered)
         guard generation == revision else { return }
         var next = settings; next.links = links
         do { try persist(next) } catch { for rule in saved.rules.rules { snapshots[rule.id]?.state = .failed }; return }
-        var addFailures: Set<UUID> = []
+        var addFailures: Set<String> = []
         for request in selected {
             guard generation == revision else { return }
             if pending.contains(where: { $0.matches(request) }) && !didPurge { continue }
-            do { try await backend.add(request) } catch { if let link = links[request.token] { addFailures.insert(link.ruleID) } }
+            do { try await backend.add(request) } catch { addFailures.insert(request.id) }
             if generation != revision { await backend.remove([request.id]); return }
         }
         let evidence = await backend.pending()
         guard generation == revision else { return }
         let actual = Set(selected.filter { request in evidence.contains { $0.matches(request) } }.map(\.id))
+        func delivery(_ requests: [ReminderRequest]) -> ReminderDeliveryState {
+            let count = requests.filter { actual.contains($0.id) }.count
+            if requests.contains(where: { addFailures.contains($0.id) }) || count < requests.count { return count > 0 || requests.contains(where: { !selectedIDs.contains($0.id) }) ? .partial : .failed }
+            return count > 0 ? .scheduled : .noFuture
+        }
         for rule in saved.rules.rules {
-            let requests = ordered.filter { links[$0.token]?.ruleID == rule.id }
-            let count = requests.filter { selectedIDs.contains($0.id) && actual.contains($0.id) }.count
-            let deferred = requests.filter { !selectedIDs.contains($0.id) }.count
-            let state: ReminderDeliveryState = unsafe.contains(rule.id) ? .needsConfirmation : failed.contains(rule.id) ? .failed : !rule.enabled ? .noFuture : !permission.canSchedule || query.state == .connectionRequired ? .permissionRequired : addFailures.contains(rule.id) || count < requests.count ? (count > 0 || deferred > 0 ? .partial : .failed) : count > 0 ? .scheduled : .noFuture
-            snapshots[rule.id] = ReminderDeliverySnapshot(desiredEnabled: rule.enabled, state: state, scheduled: count, deferred: deferred)
+            let requests = ordered.filter { links[$0.token].flatMap { effectiveRule($0, in: saved) }?.id == rule.id }
+            snapshots[rule.id] = ReminderDeliverySnapshot(desiredEnabled: rule.enabled, state: unsafeRules.contains(rule.id) ? .needsConfirmation : failed.contains(rule.id) ? .failed : delivery(requests), scheduled: requests.filter { actual.contains($0.id) }.count, deferred: requests.filter { !selectedIDs.contains($0.id) }.count)
         }
         for event in events {
-            guard let rule = saved.rules.resolve(event: event, context: context), var value = snapshots[rule.id] else { continue }
+            if unsafeEvents.contains(event.id) { eventSnapshots[event.id] = ReminderDeliverySnapshot(desiredEnabled: true, state: .needsConfirmation); continue }
+            guard let rule = saved.rules.resolve(event: event, context: context) else { continue }
             let anchor = event.isRecurring ? event.reminderAnchor(context: context) : rule.anchor
             let requests = ordered.filter { request in
                 guard let link = links[request.token] else { return false }
-                return link.ruleID == rule.id && link.identity.matchesOccurrenceItem(event.reminderIdentity) && link.anchor == anchor
+                return link.identity.matchesOccurrenceItem(event.reminderIdentity) && link.anchor == anchor
             }
-            value.scheduled = requests.filter { actual.contains($0.id) }.count
-            value.deferred = requests.filter { !selectedIDs.contains($0.id) }.count
-            if [.scheduled, .partial, .noFuture].contains(value.state) {
-                value.state = value.deferred > 0 ? .partial : value.scheduled > 0 ? .scheduled : .noFuture
-            }
-            eventSnapshots[event.id] = value
+            eventSnapshots[event.id] = ReminderDeliverySnapshot(desiredEnabled: rule.enabled, state: failed.contains(rule.id) ? .failed : delivery(requests), scheduled: requests.filter { actual.contains($0.id) }.count, deferred: requests.filter { !selectedIDs.contains($0.id) }.count)
         }
         if scheduled > 0 { lastScheduled = currentTime }
-        // Revisit the queue before its last selected fire, and promptly refill
-        // after earlier requests leave the system queue.
         if let last = selected.last { armTimer(delay: last.fireDate.timeIntervalSince(now()) - 60) }
     }
 }

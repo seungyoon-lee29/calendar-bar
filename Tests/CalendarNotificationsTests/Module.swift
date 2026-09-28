@@ -32,21 +32,23 @@ import CalendarAccess
 private final class MemoryReminderStorage: ReminderStorage, @unchecked Sendable {
     var value = ReminderSettings()
     var fail = false
-    func load() throws -> ReminderSettings { value }
+    var failLoad = false
+    func load() throws -> ReminderSettings { if failLoad { throw ReminderStorageError.corrupt }; return value }
     func save(_ settings: ReminderSettings) throws { if fail { throw ReminderStorageError.unavailable }; value = settings }
 }
 @MainActor private final class Selection: CalendarSelectionStorage {
     func load() -> Set<String> { ["cal"] }
     func save(_ ids: Set<String>) {}
 }
-private final class CalendarFake: CalendarBackend, @unchecked Sendable {
+@MainActor private final class CalendarFake: CalendarBackend {
     var access: CalendarPermission = .authorized
     var items: [EventOccurrence] = []
     var fail = false
     var resolution: CalendarEventResolution = .missing
+    var calendarIDs = ["cal"]
     func permission() async -> CalendarPermission { access }
     func requestAccess() async throws {}
-    func calendars() async throws -> [CalendarDescriptor] { [CalendarDescriptor(id: "cal", name: "", sourceName: "", color: RGBAColor(red: 0, green: 0, blue: 0))] }
+    func calendars() async throws -> [CalendarDescriptor] { calendarIDs.map { CalendarDescriptor(id: $0, name: "", sourceName: "", color: RGBAColor(red: 0, green: 0, blue: 0)) } }
     func events(interval: DateInterval, calendarIDs: Set<String>) async throws -> [EventOccurrence] { if fail { throw ReminderStorageError.unavailable }; return items }
     func resolve(identity: ReminderIdentity, anchor: OccurrenceAnchor?, isRecurring: Bool, searchInterval: DateInterval?, calendarIDs: Set<String>) async throws -> CalendarEventResolution { resolution }
 }
@@ -56,10 +58,12 @@ private actor NotificationFake: ReminderNotificationBackend {
     var auth = ReminderPermission(authorizationRawValue: 2, alertRawValue: 2)
     var failAfter: Int?
     var additions = 0
+    var requestFails = false
     var hold = false
     var continuation: CheckedContinuation<Void, Never>?
     func permission() -> ReminderPermission { auth }
-    func requestPermission() {}
+    func requestPermission() throws { if requestFails { throw ReminderStorageError.unavailable } }
+    func failPermissionRequest() { requestFails = true }
     func pending() -> [ReminderRequest] { Array(requests.values) }
     func deliveredIdentifiers() -> [String] { delivered }
     func add(_ request: ReminderRequest) async throws {
@@ -73,6 +77,7 @@ private actor NotificationFake: ReminderNotificationBackend {
     func suspended() -> Bool { continuation != nil }
     func resume() { hold = false; continuation?.resume(); continuation = nil }
     func markDelivered(_ ids: [String]) { delivered = ids }
+    func deliver(_ ids: [String]) { for id in ids { requests.removeValue(forKey: id) }; delivered = ids }
     func deny() { auth = ReminderPermission(authorizationRawValue: 1, alertRawValue: 1) }
 }
 @MainActor final class ReminderCoordinatorTests: XCTestCase {
@@ -269,5 +274,141 @@ private actor NotificationFake: ReminderNotificationBackend {
         await restarted.refresh()
         let afterRestart = await backend.deliveredIdentifiers(); XCTAssertTrue(afterRestart.isEmpty)
         let persistedHidden = await backend.pending(); XCTAssertTrue(persistedHidden.allSatisfy { !$0.title.contains("PRIVATE") })
+    }
+}
+
+@MainActor extension ReminderCoordinatorTests {
+    func testReviewOffAndSelectionStillCancelDuringQueryFailure() async throws {
+        let calendar = CalendarFake(); let backend = NotificationFake(); let item = event(); calendar.items = [item]
+        let access = CalendarAccessController(backend: calendar, storage: Selection(), observeChanges: false)
+        let time = now
+        let model = ReminderCoordinator(access: access, storage: MemoryReminderStorage(), backend: backend, now: { time }, observeChanges: false)
+        try await model.save(rule: rule(item), event: item)
+        let original = await backend.pending(); await backend.markDelivered(original.map(\.id))
+        calendar.fail = true
+        try await model.save(rule: rule(item, enabled: false), event: item)
+        var pending = await backend.pending(); XCTAssertTrue(pending.isEmpty)
+        var delivered = await backend.deliveredIdentifiers(); XCTAssertTrue(delivered.isEmpty)
+        calendar.fail = false; try await model.save(rule: rule(item), event: item)
+        calendar.calendarIDs = ["cal", "other"]; calendar.fail = true
+        await access.setSelectedCalendarIDs(["other"]); await model.refresh()
+        pending = await backend.pending(); delivered = await backend.deliveredIdentifiers()
+        XCTAssertTrue(pending.isEmpty); XCTAssertTrue(delivered.isEmpty)
+    }
+    func testReviewCorruptStorageCannotBlockPermissionCleanup() async throws {
+        let calendar = CalendarFake(); let backend = NotificationFake(); let storage = MemoryReminderStorage(); let item = event(); calendar.items = [item]
+        let model = coordinator(calendar, backend, storage); try await model.save(rule: rule(item), event: item)
+        let pending = await backend.pending(); await backend.markDelivered(pending.map(\.id) + ["other.app"])
+        let foreign = ReminderRequest(id: "other.app", fireDate: item.start, title: "foreign", body: "", token: "foreign")
+        try await backend.add(foreign)
+        storage.failLoad = true; calendar.access = .denied
+        let broken = coordinator(calendar, backend, storage); await broken.refresh()
+        let remaining = await backend.pending(); XCTAssertEqual(remaining.map(\.id), ["other.app"])
+        let delivered = await backend.deliveredIdentifiers(); XCTAssertEqual(delivered, ["other.app"])
+        XCTAssertNotNil(broken.storageError)
+    }
+    func testReviewFormatChangeIsOccurrenceScoped() async throws {
+        let calendar = CalendarFake(); let backend = NotificationFake()
+        func occurrence(_ offset: TimeInterval, allDay: Bool = false, unknown: Bool = false) -> EventOccurrence {
+            let start = now.addingTimeInterval(offset)
+            return EventOccurrence(calendarID: "cal", calendarName: "", color: RGBAColor(red: 0, green: 0, blue: 0), eventID: "series", title: "", start: start, end: start.addingTimeInterval(60), isAllDay: allDay, isRecurring: true, originalOccurrence: unknown ? nil : .timed(start), confirmedSeriesKey: "master")
+        }
+        let a = occurrence(7200), b = occurrence(14400), c = occurrence(21600)
+        calendar.items = [a,b,c]
+        let model = coordinator(calendar, backend)
+        let series = try ReminderRule(identity: a.reminderIdentity, anchor: .timed(a.start), scope: .thisAndFuture, format: .timed, enabled: true, triggers: ReminderDefaults().timed)
+        try await model.save(rule: series, event: a)
+        let changed = occurrence(21600, allDay: true); calendar.items = [a,b,changed]; await model.refresh()
+        XCTAssertEqual(model.scheduled, 4); XCTAssertEqual(model.snapshot(for: a).state, .scheduled)
+        XCTAssertEqual(model.snapshot(for: changed).state, .needsConfirmation)
+        let unknown = occurrence(21600, unknown: true); calendar.items = [a,b,unknown]; await model.refresh()
+        XCTAssertEqual(model.scheduled, 4); XCTAssertEqual(model.snapshot(for: b).state, .scheduled)
+        XCTAssertEqual(model.snapshot(for: unknown).state, .needsConfirmation)
+    }
+    func testReviewDeliveredOccurrenceUsesCurrentOverrideAndDeletion() async throws {
+        let calendar = CalendarFake(); let backend = NotificationFake()
+        func occurrence(_ offset: TimeInterval) -> EventOccurrence {
+            let start = now.addingTimeInterval(offset)
+            return EventOccurrence(calendarID: "cal", calendarName: "", color: RGBAColor(red: 0, green: 0, blue: 0), eventID: "series", title: "", start: start, end: start.addingTimeInterval(60), isAllDay: false, isRecurring: true, originalOccurrence: .timed(start), confirmedSeriesKey: "master")
+        }
+        let a = occurrence(7200), b = occurrence(14400); calendar.items = [a,b]
+        let model = coordinator(calendar, backend)
+        let series = try ReminderRule(identity: a.reminderIdentity, anchor: .timed(a.start), scope: .thisAndFuture, format: .timed, enabled: true, triggers: ReminderDefaults().timed)
+        try await model.save(rule: series, event: a)
+        let pending = await backend.pending(); let aIDs = pending.filter { model.clickLink(token: $0.token)?.anchor == .timed(a.start) }.map(\.id)
+        await backend.deliver(aIDs)
+        let off = try ReminderRule(identity: a.reminderIdentity, anchor: .timed(a.start), scope: .thisOccurrence, format: .timed, enabled: false, triggers: [])
+        try await model.save(rule: off, event: a)
+        var delivered = await backend.deliveredIdentifiers(); XCTAssertTrue(delivered.isEmpty); XCTAssertEqual(model.scheduled, 2)
+        try await model.removeOverride(identity: a.reminderIdentity, anchor: .timed(a.start))
+        await backend.deliver(aIDs); calendar.items = [b]; calendar.resolution = .missing
+        await model.refresh(); delivered = await backend.deliveredIdentifiers()
+        XCTAssertTrue(delivered.isEmpty); XCTAssertEqual(model.scheduled, 2)
+    }
+    func testReviewEventSnapshotPreservesTriggerFailure() async throws {
+        let calendar = CalendarFake(); let backend = NotificationFake(); let item = event(); calendar.items = [item]
+        await backend.setFailure(1)
+        let model = coordinator(calendar, backend); try await model.save(rule: rule(item), event: item)
+        XCTAssertEqual(model.snapshot(for: item).scheduled, 1)
+        XCTAssertEqual(model.snapshot(for: item).state, .partial)
+    }
+    func testReviewHideAndFullQueryFailureKeepsGenericRequests() async throws {
+        let calendar = CalendarFake(); let backend = NotificationFake(); let item = event(); calendar.items = [item]
+        let model = coordinator(calendar, backend); try await model.save(rule: rule(item), event: item)
+        let before = await backend.pending(); await backend.markDelivered(before.map(\.id))
+        calendar.fail = true; try await model.setHideContent(true)
+        let after = await backend.pending()
+        XCTAssertEqual(Set(before.map(\.id)), Set(after.map(\.id)))
+        XCTAssertTrue(after.allSatisfy { $0.title == "일정 알림" && $0.body == "캘린더에서 일정을 확인하세요." })
+        let delivered = await backend.deliveredIdentifiers(); XCTAssertTrue(delivered.isEmpty)
+    }
+    func testReviewPermissionRequestFailureObservable() async throws {
+        let calendar = CalendarFake(); let backend = NotificationFake(); let model = coordinator(calendar, backend)
+        await backend.failPermissionRequest(); await model.requestPermission()
+        XCTAssertNotNil(model.permissionRequestError)
+        XCTAssertTrue(model.permission.canSchedule)
+    }
+}
+
+@MainActor extension ReminderCoordinatorTests {
+    func testTimerRearmingCancellationAndDeallocation() async {
+        let calendar = CalendarFake(); let backend = NotificationFake(); let time = now
+        var model: ReminderCoordinator? = ReminderCoordinator(access: CalendarAccessController(backend: calendar, storage: Selection(), observeChanges: false), storage: MemoryReminderStorage(), backend: backend, now: { time }, observeChanges: true)
+        for _ in 0..<100 { await model!.refresh() }
+        weak let released = model; model = nil
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertNil(released)
+    }
+    func testFailedQueryPreservesOtherRuleAndRemovingOverrideCancels() async throws {
+        let calendar = CalendarFake(); let backend = NotificationFake(); let a = event()
+        let b = EventOccurrence(calendarID: "cal", calendarName: "", color: a.color, eventID: "other", title: "", start: a.start, end: a.end, isAllDay: false)
+        calendar.items = [a,b]
+        let model = coordinator(calendar, backend)
+        try await model.save(rule: rule(a), event: a); try await model.save(rule: rule(b), event: b)
+        calendar.fail = true
+        try await model.save(rule: rule(a, enabled: false), event: a)
+        var pending = await backend.pending(); XCTAssertEqual(pending.count, 2)
+        XCTAssertTrue(pending.allSatisfy { model.clickLink(token: $0.token)?.identity.localItemID == "other" })
+        try await model.removeOverride(identity: b.reminderIdentity, anchor: .timed(b.start))
+        pending = await backend.pending(); XCTAssertTrue(pending.isEmpty)
+    }
+    func testUnreadableFilePreservedWhileUnverifiableScopeIsPurged() async throws {
+        let calendar = CalendarFake(); let backend = NotificationFake(); let item = event(); calendar.items = [item]
+        let original = coordinator(calendar, backend); try await original.save(rule: rule(item), event: item)
+        let known = await backend.pending()
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let time = now
+        for bytes in [Data("broken".utf8), Data("{\"version\":99}".utf8)] {
+            for request in known { try await backend.add(request) }
+            await backend.markDelivered(known.map(\.id))
+            try bytes.write(to: url)
+            let model = ReminderCoordinator(access: CalendarAccessController(backend: calendar, storage: Selection(), observeChanges: false), storage: FileReminderStorage(url: url), backend: backend, now: { time }, observeChanges: false)
+            await model.refresh()
+            let pending = await backend.pending(); let delivered = await backend.deliveredIdentifiers()
+            XCTAssertTrue(pending.isEmpty); XCTAssertTrue(delivered.isEmpty)
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+            XCTAssertNotNil(model.storageError)
+        }
     }
 }
