@@ -5,6 +5,15 @@ import CalendarNotifications
 @testable import CalendarUI
 
 final class ReminderIntegrationTests: XCTestCase {
+    func testNotificationReportRequiresBothExplicitFlagAndSeparateQABundle() {
+        let flag = "--qa-notification-report"
+        XCTAssertEqual(CalendarLaunchOptions.notificationReportMode(arguments: ["app", flag], bundleID: "test.calendar.qa"), .readOnly)
+        XCTAssertEqual(CalendarLaunchOptions.notificationReportMode(arguments: ["app"], bundleID: "test.calendar.qa"), .none)
+        XCTAssertEqual(CalendarLaunchOptions.notificationReportMode(arguments: ["app", "--qa", flag], bundleID: "test.calendar"), .denied)
+        XCTAssertEqual(CalendarLaunchOptions.notificationReportMode(arguments: ["app", flag], bundleID: nil), .denied)
+        XCTAssertEqual(CalendarLaunchOptions.notificationReportMode(arguments: ["app", flag], bundleID: "test.calendar.qa.other"), .denied)
+    }
+
     func testQAColdLaunchWithoutArgumentsKeepsIsolationAndSeed() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
