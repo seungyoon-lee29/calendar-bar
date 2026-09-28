@@ -8,6 +8,10 @@ import ServiceManagement
 @MainActor struct CalendarPopover: View {
     @Bindable var model: CalendarModel
     @ObservedObject var login: LoginItemController
+    @State private var paging = MonthPagingState()
+    @GestureState private var isDragging = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let pageWidth = 340.0
     var loginToggleBinding: Binding<Bool> {
         Binding(get: { login.state == .enabled }, set: { login.setEnabled($0) })
     }
@@ -18,6 +22,9 @@ import ServiceManagement
         }
         .frame(width: 340, height: 520)
         .background(Color(nsColor: .windowBackgroundColor))
+        .onDisappear { resetPaging() }
+        .onChange(of: model.presentationID) { _, _ in resetPaging() }
+        .onChange(of: model.calendar.displayedMonth) { _, _ in resetPaging() }
     }
     private var calendarPage: some View {
         VStack(spacing: 0) {
@@ -26,9 +33,9 @@ import ServiceManagement
                     .font(.system(size: 18, weight: .semibold)).accessibilityAddTraits(.isHeader)
                 Spacer()
                 Button("오늘") { model.open() }.font(.system(size: 11)).buttonStyle(.bordered)
-                Button { model.moveMonth(-1) } label: { Image(systemName: "chevron.left") }
+                Button { settleMonth(-1) } label: { Image(systemName: "chevron.left") }
                     .accessibilityLabel("이전 달")
-                Button { model.moveMonth(1) } label: { Image(systemName: "chevron.right") }
+                Button { settleMonth(1) } label: { Image(systemName: "chevron.right") }
                     .accessibilityLabel("다음 달")
             }.buttonStyle(.plain).padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 16)
             HStack(spacing: 0) {
@@ -38,15 +45,7 @@ import ServiceManagement
                         .frame(maxWidth: .infinity)
                 }
             }.padding(.horizontal, 16).padding(.bottom, 8)
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 0), count: 7), spacing: 3) {
-                ForEach(model.calendar.grid.days, id: \.self) { day in dayCell(day) }
-            }
-            .padding(.horizontal, 16)
-            .contentShape(Rectangle())
-            .highPriorityGesture(DragGesture(minimumDistance: 8).onEnded { value in
-                if let amount = MonthSwipe.direction(x: value.translation.width, y: value.translation.height) { model.moveMonth(amount) }
-            })
-            .padding(.bottom, 14)
+            monthPager.padding(.bottom, 14)
             Divider().padding(.horizontal, 20)
             HStack {
                 Text(model.formatted(model.calendar.selectedDate, "M월 d일 EEEE")).font(.system(size: 13, weight: .semibold))
@@ -62,27 +61,67 @@ import ServiceManagement
             }.padding(.horizontal, 20).padding(.vertical, 12)
         }
     }
-    private func dayCell(_ day: Date) -> some View {
-        let calendar = model.calendar.context.calendar
-        let today = calendar.isDate(day, inSameDayAs: model.calendar.today)
-        let selected = calendar.isDate(day, inSameDayAs: model.calendar.selectedDate)
-        let inMonth = calendar.isDate(day, equalTo: model.calendar.displayedMonth, toGranularity: .month)
-        let colors = EventIndex.colors(on: day, in: model.access.events, context: model.calendar.context)
-        return Button { model.select(day) } label: {
-            VStack(spacing: 3) {
-                Text("\(calendar.component(.day, from: day))")
-                    .font(.system(size: 13, weight: today ? .semibold : .regular))
-                    .foregroundStyle(today ? Color.white : inMonth ? Color.primary : Color.secondary.opacity(0.45))
-                    .frame(width: 29, height: 29)
-                    .background { if today { Circle().fill(Color.blue) } }
-                    .overlay { if selected && !today { Circle().stroke(Color.secondary.opacity(0.45), lineWidth: 1) } }
-                HStack(spacing: 2) {
-                    ForEach(Array(colors.prefix(3).enumerated()), id: \.offset) { _, color in Circle().fill(Color(color)).frame(width: 3, height: 3) }
-                    if colors.count > 3 { Text("+").font(.system(size: 7)).foregroundStyle(.secondary) }
-                }.frame(height: 5)
-            }.frame(maxWidth: .infinity).frame(height: 38).contentShape(Rectangle())
-        }.buttonStyle(.plain)
-            .accessibilityLabel(model.formatted(day, "yyyy년 M월 d일 EEEE") + (today ? ", 오늘" : "") + (selected ? ", 선택됨" : ""))
+    private func pageState(_ amount: Int) -> CalendarState {
+        var state = model.calendar
+        if amount != 0 { state.moveMonth(by: amount) }
+        return state
+    }
+    private func gridHeight(_ state: CalendarState) -> Double {
+        Double(state.grid.days.count / 7) * 41 - 3
+    }
+    private var monthPager: some View {
+        let currentHeight = gridHeight(model.calendar)
+        let neighborHeight = gridHeight(pageState(paging.offset < 0 ? 1 : -1))
+        let progress = min(1, abs(paging.offset) / pageWidth)
+        return ZStack(alignment: .topLeading) {
+            ForEach(-1...1, id: \.self) { amount in
+                MonthGridPage(state: pageState(amount), events: model.access.events, onSelect: model.select)
+                    .equatable()
+                    .frame(width: pageWidth)
+                    .offset(x: Double(amount) * pageWidth + paging.offset)
+                    .allowsHitTesting(amount == 0 && !paging.isSettling)
+                    .accessibilityHidden(amount != 0)
+            }
+        }
+        .frame(width: pageWidth, height: currentHeight + (neighborHeight - currentHeight) * progress, alignment: .topLeading)
+        .clipped()
+        .contentShape(Rectangle())
+        .highPriorityGesture(DragGesture(minimumDistance: 8)
+            .updating($isDragging) { _, active, _ in active = true }
+            .onChanged { value in
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    paging.drag(x: value.translation.width, y: value.translation.height, width: pageWidth)
+                }
+            }
+            .onEnded { value in
+                settleMonth(MonthSwipe.direction(x: value.translation.width, y: value.translation.height))
+            })
+        .onChange(of: isDragging) { _, active in
+            if !active && !paging.isSettling && paging.offset != 0 { settleMonth(nil) }
+        }
+    }
+    private func settleMonth(_ direction: Int?) {
+        guard !paging.isSettling else { return }
+        let presentation = model.presentationID
+        var token: Int?
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.24), completionCriteria: .removed) {
+            token = paging.settle(direction: direction, width: pageWidth)
+        } completion: {
+            guard presentation == model.presentationID, let token else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                guard paging.finish(token) else { return }
+                if let direction { model.moveMonth(direction) }
+            }
+        }
+    }
+    private func resetPaging() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { paging.reset() }
     }
     @ViewBuilder private var agenda: some View {
         switch model.access.state {

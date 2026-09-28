@@ -15,6 +15,7 @@ enum MonthSwipe {
     private(set) var calendar: CalendarState
     let access: CalendarAccessController
     var showingSettings = false
+    private(set) var presentationID = UUID()
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     init(access: CalendarAccessController, now: Date = Date(), timeZone: TimeZone = .current) {
         self.access = access
@@ -22,6 +23,7 @@ enum MonthSwipe {
     }
     func open(now: Date = Date(), timeZone: TimeZone = .current) {
         showingSettings = false
+        presentationID = UUID()
         calendar.refreshToday(at: now, timeZone: timeZone)
         calendar.open(at: now)
         refresh()
