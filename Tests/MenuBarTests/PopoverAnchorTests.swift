@@ -3,25 +3,43 @@ import XCTest
 @testable import MenuBar
 
 final class PopoverAnchorTests: XCTestCase {
-    @MainActor func testColdPresentationWaitsForAnchorAndActivation() async {
+    @MainActor func testAccessoryActivationIsRequestedAfterFirstWindowExists() async {
+        let presentation = PopoverPresentation(wait: { await Task.yield() })
+        var shown = false
         var active = false
+        var actions: [String] = []
+        presentation.request(activate: {
+            actions.append("activate")
+            // Replay the observed accessory-app behavior: no activation without a window.
+            if shown { active = true }
+        }, attempt: {
+            actions.append("show")
+            shown = true
+            return true
+        })
+        await presentation.waitUntilIdle()
+        XCTAssertEqual(actions, ["show", "activate"])
+        XCTAssertTrue(shown)
+        XCTAssertTrue(active)
+    }
+
+    @MainActor func testColdPresentationWaitsForAnchorWithoutRequiringActivation() async {
         var anchorReady = false
         var ticks = 0
         let presentation = PopoverPresentation(wait: {
             ticks += 1
-            if ticks == 1 { active = true }
             if ticks == 2 { anchorReady = true }
             await Task.yield()
         })
         var shown = false
         presentation.request(activate: {}, attempt: {
-            guard active && anchorReady else { return false }
+            guard anchorReady else { return false }
             shown = true
             return true
         })
         XCTAssertFalse(shown)
         await presentation.waitUntilIdle()
-        XCTAssertTrue(shown, "Notification click must survive cold status-item and activation readiness")
+        XCTAssertTrue(shown, "Notification click must survive cold status-item readiness")
     }
 
     @MainActor func testUnavailableAnchorRetriesAreBoundedAndCloseCancelsPendingShow() async {
