@@ -149,8 +149,29 @@ Runtime QA의 `~/Library/Application Support/local.ian.CalendarBar.runtime.qa/qa
 최소 지원 macOS 14의 실제 실행은 미검증이다. macOS 26.3.1에서의 실행이나 최소 타깃 빌드 성공으로 구버전 동작을 보장하지 않는다. 시험 종료 후 QA 규칙·대기/표시 알림 정리·QA 알림 허용의 원래 꺼짐 복원이 남아 있다. 임시 단계 진단은 `185d998`에서 소스와 전용 테스트를 제거했다. 실제 클릭 재시험을 위한 기존 canonical QA 진단 빌드는 보존하며 소스 제거와 설치된 시험 번들 상태를 구별한다. 진단 제거 후 메인 검증자가 `185d998`에서 프로젝트 루트 전체 검증을 실행했다. `.dryforge/resume-integrated-verify.log`의 2026-09-28 21:44 실행에서 Swift 114개·실패 0, Python 9개·OK, 세 단계 EXIT 0과 INTEGRATED_EXIT 0을 문서 담당자가 직접 확인했다. release 번들·서명 검증을 포함한다. 116개에서 114개로 감소한 것은 임시 진단 전용 테스트 2개 제거에 따른 것이다. 이 통합 검증 시점에는 실제 클릭 성공 여부가 미확인이었으며 후속 확인 범위는 아래에 기록한다.
 
 
-### 콜드 클릭 화면 표시 확인과 웜 클릭 대기
+### 콜드 클릭 화면 표시 확인과 웜 클릭 확인 경과
 
 후속 콜드 클릭에서 사용자는 기존 알림을 누르자 화면이 열린다고 확인했다. 메인 검증자의 GUI 조작 전에 QA PID 41981의 단계 진단은 launch → responseWithToken → routeBegin/showRequested → showFailed → routeHighlighted → waitingAnchor 2회 → showSucceeded → popoverDidShow를 기록했다. 표시 성공은 요청 후 약 0.41초이며 약 4초 뒤 closeRequested가 기록됐다. canonical QA 한 개와 기존 정상 앱 PID 61441이 유지됐다. 이는 실제 OS 클릭에 따른 실행·화면 표시 증거다. routeHighlighted는 모델 상태이므로 목적 날짜·행 강조의 실제 화면 확인으로 확대하지 않는다.
 
-웜 클릭 재시험은 2026-09-28 21:56 KST 알림 한 개로 준비했다. UI에서 20시간 16분 전 항목을 저장한 뒤 같은 실행 파일의 보고에서 pending=1, 발송 시각 2026-09-28T21:56:00+09:00, delivered=0을 확인했다. 달력을 오늘로 돌리고 Escape로 닫은 뒤 QA 프로세스를 유지했다. 21:56 이후 같은 실행 파일 보고는 exit 0, pending=0, delivered=1이었으나 새 responseWithToken은 없었다. 웜 알림의 전달 목록 확인과 사용자 클릭 성공을 구별하며, 날짜·행 강조의 실제 화면 및 웜 클릭은 사용자 확인 대기다. 실제 OS 정리 검증과 시험 종료 후 QA 정리·허용 복원 등 기존 잔여 항목은 유지한다.
+웜 클릭 재시험은 2026-09-28 21:56 KST 알림 한 개로 준비했다. UI에서 20시간 16분 전 항목을 저장한 뒤 같은 실행 파일의 보고에서 pending=1, 발송 시각 2026-09-28T21:56:00+09:00, delivered=0을 확인했다. 달력을 오늘로 돌리고 Escape로 닫은 뒤 QA 프로세스를 유지했다. 21:56 이후 같은 실행 파일 보고는 exit 0, pending=0, delivered=1이었으나 새 responseWithToken은 없었다. 이 시점에는 전달 목록만 확인했으며 사용자 클릭과 정리 검증은 대기 상태였다. 이후 결과는 아래와 같다.
+
+
+### 웜 클릭 확인과 최종 코드의 실제 알림 정리
+
+사용자는 웜 클릭 후 9월 29일 이동·행 강조 확인 질문에 “ㅇㅇ확인”이라고 답했다. 메인 검증자의 GUI 재선택 전에 동일 QA PID 41981에서 responseWithToken → routeBegin → showSucceeded → routeHighlighted → popoverDidShow가 기록됐고 프로세스 재실행은 없었다. 웜 클릭의 날짜·강조는 사용자 관찰과 진단을 함께 근거로 삼는다. 앞선 콜드 클릭 확인은 사용자 화면 표시와 단계 진단의 범위이며, 콜드 목적 날짜·강조의 실제 화면까지 확인한 것으로 확대하지 않는다.
+
+클릭 시험 후 QA PID 41981을 종료했고 600초 제한 watchdog 세션 64060은 exit 0, QA_PROCESS_ABSENT로 끝났다. canonical `build/CalendarBarRuntimeQA.app`의 실행 파일을 최종 진단 제거 `build/CalendarBar.app` 실행 파일로 교체한 뒤 ad-hoc 서명과 서명 검증 exit 0을 확인했다. 다른 QA 복사본은 생성하지 않았으며 실사용 설치본 파일은 바꾸지 않았다. 이후 `scripts/run_qa.py`의 600초 제한과 `--qa --qa-notifications --qa-window` 옵션으로 최종 코드의 실제 화면과 OS 예약 정리를 검증했다.
+
+| 실제 조작 | UI 및 같은 실행 파일의 OS 조회 결과 |
+|---|---|
+| 시간 알림 20시간 0분 전 저장 → 알림 끄기 | UI 예약 1·pending/delivered 1/0 → UI 0·OS 0/0 |
+| 20시간 8분 전(22:04)과 19시간 전 저장 | OS 2/0 → 22:04 이후 1/1 |
+| 내용 숨김 켜기 | OS 1/1 → 1/0: 남은 예약 유지·표시 알림 제거 |
+| QA 샘플 캘린더 선택 해제 → 재선택 | UI 0·OS 0/0 → UI 1·OS 1/0 |
+| 시스템 설정에서 Runtime QA 알림 허용만 끄고 앱에서 예약 다시 확인 | UI 권한 필요·예약 0, authorization=1·alert=2·pending/delivered 0/0 |
+
+내용 숨김을 false로 복원하고 해당 규칙을 껐으며 QA launch notifications=false를 저장했다. 저장된 활성 규칙 수 0과 hide=false를 확인했다. 이 확인용 보조 스크립트는 설정 구조를 가정한 두 번의 실행에 실패했으나 `ReminderSettings` 소스를 읽고 재귀 집계로 활성 규칙 0을 확인했다. 이는 점검 스크립트의 실패이며 제품 저장 실패로 기록하지 않는다.
+
+Cmd-Q로 QA가 종료되지 않아 정확한 QA 실행 경로의 PID에 SIGTERM을 보냈다. 제한 실행 세션 39609는 exit 0, QA_PROCESS_ABSENT로 종료됐으며 최종 읽기 보고에서 OS pending/delivered 0/0을 확인했다. 시험용 알림 허용은 원래 꺼짐으로 복원했다. 원본 일정·실사용 설치본 파일·로그인 항목·다른 앱 권한은 변경하지 않았다.
+
+이번 실제 권한 시험은 시스템 알림 허용의 회수다. 합성 캘린더 backend를 사용했으므로 실제 Calendar fullAccess 회수 검증은 수행하지 않았다. 최초 알림 권한 요청 오류 원인, 실제 계정의 분리된 반복 예외 조합, macOS 14 실행, 재로그인·재부팅 지속성은 제한으로 유지한다. 소스는 앞서 전체 검증한 `185d998`과 같으며 Swift 114개·Python 9개·전체 exit 0 기록을 동일 소스의 근거로 사용한다. 이번 후속 변경은 문서뿐이므로 링크·참조와 diff를 검사했으며 새 전체 테스트 실행으로 보고하지 않는다.
