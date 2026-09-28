@@ -222,12 +222,12 @@ enum CalendarTab: String, CaseIterable { case calendar = "달력", upcoming = "�
         } catch { if editingID == reminderEditingID && canDisplayReminder { reminderError = "저장하지 못했습니다. 숫자와 알림 시간을 확인하고 다시 시도해 주세요." } }
     }
     func resumeInheritedReminder() async {
-        guard !reminderBusy, let reminders, let draft = reminderDraft, let anchor = draft.occurrenceAnchor, canDisplayReminder else { return }
+        guard !reminderBusy, let reminders, let draft = reminderDraft, let existing = draft.existing, existing.scope == .thisOccurrence, canDisplayReminder else { return }
         let editingID = reminderEditingID
         reminderBusy = true
         defer { reminderBusy = false }
         do {
-            try await reminders.removeOverride(identity: draft.event.reminderIdentity, anchor: anchor)
+            try await reminders.removeOverride(identity: existing.identity, anchor: existing.anchor)
             if editingID == reminderEditingID && canDisplayReminder { editReminder(draft.event) }
         } catch { if editingID == reminderEditingID && canDisplayReminder { reminderError = "개별 설정을 해제하지 못했습니다. 다시 시도해 주세요." } }
     }
