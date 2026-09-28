@@ -78,7 +78,6 @@ extension MenuBarController: CalendarPresenting {}
     public func show() { clearNotificationIntent(); menu.show(resetToToday: true) }
     public func reopen() {
         let notificationIntent = resolvingNotification || now() < notificationIntentUntil
-        QAClickTrace.record(notificationIntent ? .reopenNotification : .reopenOrdinary)
         menu.show(resetToToday: !notificationIntent)
     }
     private func clearNotificationIntent() {
@@ -87,7 +86,6 @@ extension MenuBarController: CalendarPresenting {}
         notificationIntentUntil = 0
     }
     public func openReminder(token: String) async {
-        QAClickTrace.record(.routeBegin)
         notificationIntentRevision += 1
         let revision = notificationIntentRevision
         resolvingNotification = true
@@ -102,7 +100,6 @@ extension MenuBarController: CalendarPresenting {}
         menu.show(resetToToday: false)
         qaWindow?.makeKeyAndOrderFront(nil)
         await model.routeReminder(token: token)
-        QAClickTrace.record(model.highlightedEventID != nil ? .routeHighlighted : model.navigationMessage != nil ? .routeMessage : .routeNoDestination)
     }
     public func becameActive() {
         login.refresh(); model.refresh()
