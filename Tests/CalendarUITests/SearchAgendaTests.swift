@@ -4,6 +4,19 @@ import CalendarAccess
 @testable import CalendarUI
 
 final class SearchAgendaTests: XCTestCase {
+    func testMultidayAgendaRowsHaveStableDistinctPresentationIdentities() {
+        let context = CalendarContext(timeZone: TimeZone(secondsFromGMT: 0)!)
+        let event = EventOccurrence(calendarID: "qa", calendarName: "Synthetic", color: .init(red: 0, green: 0, blue: 1), eventID: "multi", title: "Synthetic", start: day("2026-09-27"), end: day("2026-09-30"), isAllDay: true)
+        let interval = DateInterval(start: day("2026-09-28"), end: day("2026-09-30"))
+        let groups = AgendaIndex.groups(events: [event], interval: interval, context: context)
+        let rows = groups.flatMap { group in group.events.map { AgendaDisplayRow(day: group.day, event: $0) } }
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows.map(\.event.id), [event.id, event.id])
+        XCTAssertEqual(Set(rows.map(\.id)).count, 2, "The same occurrence must remain visible on both days in a flattened lazy stack")
+        let refreshed = AgendaIndex.groups(events: [event], interval: interval, context: context).flatMap { group in group.events.map { AgendaDisplayRow(day: group.day, event: $0) } }
+        XCTAssertEqual(rows.map(\.id), refreshed.map(\.id))
+    }
+
     @MainActor func testRangeNavigationAndOpenReset() async {
         let model = CalendarModel(access: CalendarAccessController(backend: SearchBackend(), storage: SearchSelection(), observeChanges: false), now: day("2026-09-28"), timeZone: TimeZone(secondsFromGMT: 0)!)
         model.setTab(.upcoming)
