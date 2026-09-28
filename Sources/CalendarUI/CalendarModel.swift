@@ -53,7 +53,7 @@ enum MonthSwipe {
         EventIndex.events(on: calendar.selectedDate, in: access.events, context: calendar.context)
     }
     func timeLabel(_ event: EventOccurrence) -> String {
-        if event.isAllDay { return "종일" }
+        if event.isAllDay { return event.start < calendar.selectedDate ? "종일 · 진행 중" : "종일" }
         if event.start < calendar.selectedDate { return "진행 중" }
         return formatted(event.start, "a h:mm")
     }

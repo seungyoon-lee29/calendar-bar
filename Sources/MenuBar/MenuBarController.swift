@@ -3,7 +3,7 @@ import AppKit
 /// Retain this controller for the app lifetime. Content owns its browsing state;
 /// onOpen resets it to today, while onDateChange only updates its notion of today.
 @MainActor
-public final class MenuBarController: NSObject {
+public final class MenuBarController: NSObject, NSPopoverDelegate {
     public let popover: NSPopover
     private let statusItem: NSStatusItem
     private let onOpen: () -> Void
@@ -12,6 +12,8 @@ public final class MenuBarController: NSObject {
     private var lastDate: DateComponents?
     private var lastTimeZone: TimeZone?
     private var escapeMonitor: Any?
+    private var localClickMonitor: Any?
+    private var globalClickMonitor: Any?
 
     public init(
         contentViewController: NSViewController,
@@ -24,6 +26,9 @@ public final class MenuBarController: NSObject {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         popover = NSPopover()
         super.init()
+        statusItem.autosaveName = "CalendarBar.date"
+        statusItem.isVisible = true
+        popover.delegate = self
         popover.behavior = .transient
         popover.contentViewController = contentViewController
         popover.contentSize = contentSize
@@ -33,6 +38,7 @@ public final class MenuBarController: NSObject {
             button.setAccessibilityLabel("캘린더 열기")
         }
         let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(applicationDeactivated), name: NSApplication.didResignActiveNotification, object: NSApp)
         for name in [NSNotification.Name.NSCalendarDayChanged,
                      NSNotification.Name.NSSystemTimeZoneDidChange,
                      NSNotification.Name.NSSystemClockDidChange] {
@@ -54,12 +60,25 @@ public final class MenuBarController: NSObject {
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+        if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
+        if let globalClickMonitor { NSEvent.removeMonitor(globalClickMonitor) }
         NSStatusBar.system.removeStatusItem(statusItem)
+    }
+
+    nonisolated static func hasVisibleAnchor(_ buttonFrame: NSRect, on screenFrame: NSRect?) -> Bool {
+        guard let screenFrame, !buttonFrame.isEmpty else { return false }
+        return screenFrame.intersects(buttonFrame)
     }
 
     @objc public func togglePopover() {
         if popover.isShown { close(); return }
-        guard let button = statusItem.button else { return }
+        statusItem.isVisible = true
+        guard let button = statusItem.button, let window = button.window, window.isVisible,
+              !button.isHiddenOrHasHiddenAncestor else { return }
+        let buttonFrame = window.convertToScreen(button.convert(button.bounds, to: nil))
+        // A detached status item can have a visible window at (0, -22) with no screen.
+        // Present only below the real menu bar icon, never from that placeholder.
+        guard Self.hasVisibleAnchor(buttonFrame, on: window.screen?.frame) else { return }
         refreshDate()
         onOpen()
         NSApp.activate(ignoringOtherApps: true)
@@ -68,6 +87,36 @@ public final class MenuBarController: NSObject {
     }
 
     public func close() { popover.performClose(nil) }
+
+    public func popoverDidShow(_ notification: Notification) {
+        removeClickMonitors()
+        let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: clicks) { [weak self] event in
+            guard let self, self.popover.isShown else { return event }
+            // Let the status button's action toggle the popover itself.
+            if event.window !== self.popover.contentViewController?.view.window,
+               event.window !== self.statusItem.button?.window {
+                self.close()
+            }
+            return event
+        }
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: clicks) { [weak self] _ in
+            self?.close()
+        }
+    }
+
+    public func popoverWillClose(_ notification: Notification) { removeClickMonitors() }
+
+    private func removeClickMonitors() {
+        if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
+        if let globalClickMonitor { NSEvent.removeMonitor(globalClickMonitor) }
+        localClickMonitor = nil
+        globalClickMonitor = nil
+    }
+
+    @objc private func applicationDeactivated(_ notification: Notification) {
+        if popover.isShown { close() }
+    }
 
     public func setContentSize(_ size: NSSize) { popover.contentSize = size }
 

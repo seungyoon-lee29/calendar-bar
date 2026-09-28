@@ -7,7 +7,8 @@ public enum StatusDate {
 
     public static func nextMidnight(after date: Date, timeZone: TimeZone = .current) -> Date {
         let calendar = calendar(timeZone)
-        return calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: date))!
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: date))!
+        return calendar.startOfDay(for: nextDay)
     }
 
     static func calendar(_ timeZone: TimeZone) -> Calendar {
