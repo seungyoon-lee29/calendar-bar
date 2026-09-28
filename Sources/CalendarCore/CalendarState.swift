@@ -20,11 +20,12 @@ public struct CalendarContext: Equatable, Sendable {
     public func monthGrid(containing date: Date) -> MonthGrid {
         let month = calendar.dateInterval(of: .month, for: date)!
         let offset = calendar.component(.weekday, from: month.start) - 1
-        let start = calendar.date(byAdding: .day, value: -offset, to: month.start)!
+        let start = calendar.startOfDay(for: calendar.date(byAdding: .day, value: -offset, to: month.start)!)
         let monthDays = calendar.range(of: .day, in: .month, for: date)!.count
         let count = ((offset + monthDays + 6) / 7) * 7
-        let days = (0..<count).map { calendar.date(byAdding: .day, value: $0, to: start)! }
-        let end = calendar.date(byAdding: .day, value: count, to: start)!
+        // A month can start at 01:00 when DST skips midnight. Normalize each civil day.
+        let days = (0..<count).map { calendar.startOfDay(for: calendar.date(byAdding: .day, value: $0, to: start)!) }
+        let end = calendar.startOfDay(for: calendar.date(byAdding: .day, value: count, to: start)!)
         return MonthGrid(monthStart: month.start, days: days, queryInterval: DateInterval(start: start, end: end))
     }
 }

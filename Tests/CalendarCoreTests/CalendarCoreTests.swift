@@ -61,6 +61,19 @@ final class CalendarCoreTests: XCTestCase {
         XCTAssertEqual(EventIndex.events(on: date("2024-03-02T12:00:00Z"), in: events, context: utc).count, 2)
         XCTAssertTrue(EventIndex.events(on: date("2024-03-03T12:00:00Z"), in: events, context: utc).isEmpty)
     }
+    func testMidnightDSTMonthStartsNormalizeEveryGridDay() {
+        let context = CalendarContext(timeZone: TimeZone(identifier: "America/Asuncion")!)
+        let grid = context.monthGrid(containing: date("2023-10-15T12:00:00Z"))
+        XCTAssertEqual(context.calendar.component(.hour, from: grid.days[0]), 1)
+        XCTAssertEqual(context.calendar.component(.hour, from: grid.days[1]), 0)
+        XCTAssertTrue(grid.days.allSatisfy { $0 == context.calendar.startOfDay(for: $0) })
+        XCTAssertEqual(grid.queryInterval.end, date("2023-11-05T03:00:00Z"))
+        var state = CalendarState(now: date("2023-09-15T12:00:00Z"), timeZone: context.calendar.timeZone)
+        state.moveMonth(by: 1)
+        XCTAssertEqual(state.selectedDate, date("2023-10-15T03:00:00Z"))
+        state.moveMonth(by: 1)
+        XCTAssertEqual(state.selectedDate, date("2023-11-15T03:00:00Z"))
+    }
     func testEventsAtDSTLocalMidnight() {
         let la = CalendarContext(timeZone: TimeZone(identifier: "America/Los_Angeles")!)
         let allDay = event("dst", start: "2024-03-10T08:00:00Z", end: "2024-03-11T07:00:00Z", allDay: true)
