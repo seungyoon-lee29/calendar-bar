@@ -36,15 +36,20 @@ public actor EventKitBackend: CalendarBackend {
         let selected = store.calendars(for: .event).filter { calendarIDs.contains($0.calendarIdentifier) }
         // Never pass nil/empty calendars to EventKit: nil means every calendar.
         guard !selected.isEmpty else { return [] }
-        let predicate = store.predicateForEvents(withStart: interval.start, end: interval.end, calendars: selected)
-        return store.events(matching: predicate).map(convert)
+        // Include whole boundary days while establishing civil-date uniqueness,
+        // even when the caller asks for only part of a day.
+        let calendar = CalendarContext(timeZone: .current).calendar
+        let start = calendar.startOfDay(for: interval.start)
+        guard let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: interval.end)) else { throw CalendarQueryError.invalidRange }
+        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: selected)
+        return EventOccurrence.markingAmbiguousOriginalDates(store.events(matching: predicate).map(convert)).filter {
+            $0.start < interval.end && ($0.end > interval.start || $0.start == $0.end && $0.start >= interval.start)
+        }
     }
     private func convert(_ event: EKEvent) -> EventOccurrence {
         let recurring = event.hasRecurrenceRules || event.isDetached
         let original = recurring ? event.occurrenceDate : event.startDate
-        let anchor: OccurrenceAnchor? = original.map { date in
-            event.isAllDay ? .civil(CivilDate(date: date, context: CalendarContext(timeZone: .current))) : .timed(date)
-        }
+        let anchors = Self.occurrenceAnchors(originalDate: original, isAllDay: event.isAllDay, context: CalendarContext(timeZone: .current))
         // A local calendar item is the only confirmed series evidence. External IDs
         // are not unique, and a detached item may have its own local identifier.
         let master = event.isDetached ? store.calendarItem(withIdentifier: event.calendarItemIdentifier) as? EKEvent : event
@@ -54,7 +59,7 @@ public actor EventKitBackend: CalendarBackend {
             eventID: event.eventIdentifier ?? event.calendarItemIdentifier,
             title: event.title, start: event.startDate, end: event.endDate, isAllDay: event.isAllDay,
             localItemID: event.calendarItemIdentifier, externalID: event.calendarItemExternalIdentifier,
-            isRecurring: recurring, originalOccurrence: anchor, confirmedSeriesKey: series)
+            isRecurring: recurring, originalOccurrence: anchors.first, confirmedSeriesKey: series, originalOccurrenceAlternatives: Array(anchors.dropFirst()))
     }
     public func resolve(identity: ReminderIdentity, anchor: OccurrenceAnchor?, isRecurring: Bool, searchInterval: DateInterval?, calendarIDs: Set<String>) async throws -> CalendarEventResolution {
         guard CalendarResolution.isValid(anchor: anchor, searchInterval: searchInterval) else { return .failed }
@@ -89,7 +94,7 @@ public actor EventKitBackend: CalendarBackend {
         var values = try await CalendarRangeQuery.fetch(backend: self, interval: interval, calendarIDs: [identity.calendarID])
         if let local, local.calendar.calendarIdentifier == identity.calendarID {
             let value = convert(local)
-            if value.originalOccurrence == anchor && !values.contains(where: { $0.id == value.id }) { values.append(value) }
+            if value.originalAnchor(matching: anchor) == anchor && !values.contains(where: { $0.id == value.id }) { values.append(value) }
         }
         // An exception can move beyond the queried interval; lack of a match is
         // not proof of deletion while its series still exists.
@@ -98,6 +103,11 @@ public actor EventKitBackend: CalendarBackend {
         } ?? false
         let absence: CalendarEventResolution = local != nil ? .outsideQuery : externalCandidate ? .needsConfirmation : .missing
         return CalendarResolution.match(values, identity: identity, anchor: anchor, isRecurring: true, absence: absence)
+    }
+    nonisolated static func occurrenceAnchors(originalDate: Date?, isAllDay: Bool, context: CalendarContext) -> [OccurrenceAnchor] {
+        guard let originalDate else { return [] }
+        let civil = OccurrenceAnchor.civil(CivilDate(date: originalDate, context: context))
+        return isAllDay ? [civil, .timed(originalDate)] : [.timed(originalDate), civil]
     }
     private static func color(_ color: CGColor?) -> RGBAColor {
         guard let color, let rgb = NSColor(cgColor: color)?.usingColorSpace(.sRGB) else {

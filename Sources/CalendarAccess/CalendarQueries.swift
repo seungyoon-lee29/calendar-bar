@@ -24,7 +24,7 @@ public enum CalendarRangeQuery {
         init(_ event: EventOccurrence) {
             calendarID = event.calendarID
             itemID = event.confirmedSeriesKey ?? event.localItemID
-            anchor = event.originalOccurrence
+            anchor = event.originalOccurrenceAlternatives.first(where: { if case .timed = $0 { return true }; return false }) ?? event.originalOccurrence
             fallbackID = anchor == nil ? event.id : nil
         }
     }
@@ -48,7 +48,7 @@ public enum CalendarRangeQuery {
             }
             cursor = end
         }
-        return result.values.sorted { $0.id < $1.id }
+        return EventOccurrence.markingAmbiguousOriginalDates(result.values.sorted { $0.id < $1.id })
     }
 }
 public extension CalendarBackend {
@@ -74,12 +74,15 @@ enum CalendarResolution {
         }
     }
     static func match(_ events: [EventOccurrence], identity: ReminderIdentity, anchor: OccurrenceAnchor?, isRecurring: Bool, absence: CalendarEventResolution) -> CalendarEventResolution {
-        let scoped = events.filter { $0.calendarID == identity.calendarID }
+        let scoped = EventOccurrence.markingAmbiguousOriginalDates(events.filter { $0.calendarID == identity.calendarID })
         let candidates = scoped.filter { event in
             guard identity.matchesOccurrenceItem(event.reminderIdentity) else { return false }
-            return !isRecurring || anchor != nil && event.originalOccurrence == anchor
+            return !isRecurring || anchor.map { event.originalAnchor(matching: $0) == $0 } == true
         }
-        if candidates.count == 1 { return .found(candidates[0]) }
+        if candidates.count == 1 {
+            if let anchor, candidates[0].ambiguousOriginalOccurrences.contains(anchor) { return .needsConfirmation }
+            return .found(candidates[0])
+        }
         if candidates.count > 1 { return .needsConfirmation }
         if let external = identity.externalID, scoped.contains(where: { $0.externalID == external }) { return .needsConfirmation }
         return absence

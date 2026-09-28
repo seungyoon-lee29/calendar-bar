@@ -30,7 +30,7 @@ public struct EventOccurrence: Identifiable, Equatable, Sendable {
             }
         }
     }
-    public var id: ID { ID(calendarID: calendarID, eventID: eventID, start: start, originalOccurrence: originalOccurrence) }
+    public var id: ID { ID(calendarID: calendarID, eventID: eventID, start: start, originalOccurrence: originalOccurrenceAlternatives.first(where: { if case .timed = $0 { return true }; return false }) ?? originalOccurrence) }
     /// Separate from the display row ID; a backend must confirm remapping after sync.
     public var reminderIdentity: ReminderIdentity {
         ReminderIdentity(calendarID: calendarID, localItemID: localItemID, externalID: externalID, confirmedSeriesKey: confirmedSeriesKey)
@@ -53,8 +53,39 @@ public struct EventOccurrence: Identifiable, Equatable, Sendable {
     public let isRecurring: Bool
     public let originalOccurrence: OccurrenceAnchor?
     public let confirmedSeriesKey: String?
+    /// Both representations of EventKit's original recurrence date, independent of
+    /// the occurrence's current display format. These values are never persisted.
+    public let originalOccurrenceAlternatives: [OccurrenceAnchor]
+    public var ambiguousOriginalOccurrences: Set<OccurrenceAnchor> = []
 
-    public init(calendarID: String, calendarName: String, color: RGBAColor, eventID: String, title: String?, start: Date, end: Date, isAllDay: Bool, localItemID: String? = nil, externalID: String? = nil, isRecurring: Bool = false, originalOccurrence: OccurrenceAnchor? = nil, confirmedSeriesKey: String? = nil) {
+    public func originalAnchor(matching anchor: OccurrenceAnchor) -> OccurrenceAnchor? {
+        ([originalOccurrence].compactMap { $0 } + originalOccurrenceAlternatives).first {
+            switch ($0, anchor) {
+            case (.timed, .timed), (.civil, .civil): return true
+            default: return false
+            }
+        }
+    }
+    public func matchesOriginalAnchor(_ anchor: OccurrenceAnchor) -> Bool {
+        !ambiguousOriginalOccurrences.contains(anchor) && originalAnchor(matching: anchor) == anchor
+    }
+    /// Mark collisions before resolving rules. Exact timed evidence remains usable
+    /// even when a civil date cannot identify one occurrence within a series.
+    public static func markingAmbiguousOriginalDates(_ events: [Self]) -> [Self] {
+        events.map { event in
+            var result = event
+            for anchor in [event.originalOccurrence].compactMap({ $0 }) + event.originalOccurrenceAlternatives {
+                guard case .civil = anchor else { continue }
+                if events.contains(where: { other in
+                    other.id != event.id && other.reminderIdentity.matchesOccurrenceItem(event.reminderIdentity)
+                        && other.originalAnchor(matching: anchor) == anchor
+                }) { result.ambiguousOriginalOccurrences.insert(anchor) }
+            }
+            return result
+        }
+    }
+
+    public init(calendarID: String, calendarName: String, color: RGBAColor, eventID: String, title: String?, start: Date, end: Date, isAllDay: Bool, localItemID: String? = nil, externalID: String? = nil, isRecurring: Bool = false, originalOccurrence: OccurrenceAnchor? = nil, confirmedSeriesKey: String? = nil, originalOccurrenceAlternatives: [OccurrenceAnchor] = []) {
         self.calendarID = calendarID
         self.calendarName = calendarName
         self.color = color
@@ -68,6 +99,7 @@ public struct EventOccurrence: Identifiable, Equatable, Sendable {
         self.isRecurring = isRecurring
         self.originalOccurrence = originalOccurrence
         self.confirmedSeriesKey = confirmedSeriesKey
+        self.originalOccurrenceAlternatives = originalOccurrenceAlternatives
     }
 }
 
