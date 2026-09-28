@@ -1,5 +1,6 @@
 import AppKit
 import CalendarUI
+import MenuBar
 import UserNotifications
 
 @MainActor
@@ -15,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        QAClickTrace.record(.launch)
         let coordinator = CalendarAppCoordinator(smoke: options.smoke, qa: options.qa, qaNotifications: options.qaNotifications, qaWindow: options.qaWindow, qaSeed: options.qaSeed)
         self.coordinator = coordinator
         clicks.install { [weak coordinator] token in await coordinator?.openReminder(token: token) }
@@ -25,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
         let token = response.notification.request.content.userInfo["token"] as? String
+        QAClickTrace.record(token == nil ? .responseWithoutToken : .responseWithToken)
         Task { @MainActor [weak self] in
             if let token { self?.clicks.receive(token) }
             completionHandler()
@@ -32,10 +35,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        coordinator?.show()
+        coordinator?.reopen()
         return false
     }
-    func applicationDidBecomeActive(_ notification: Notification) { coordinator?.becameActive() }
+    func applicationDidBecomeActive(_ notification: Notification) {
+        QAClickTrace.record(.becameActive)
+        coordinator?.becameActive()
+    }
 }
 
 // Read-only QA diagnostics intentionally bypass AppDelegate, launch settings,

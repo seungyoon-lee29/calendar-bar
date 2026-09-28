@@ -5,13 +5,25 @@ import CalendarAccess
 import CalendarNotifications
 import MenuBar
 
+@MainActor protocol CalendarPresenting: AnyObject {
+    func show(resetToToday: Bool)
+    var onUserOpen: (() -> Void)? { get set }
+}
+extension MenuBarController: CalendarPresenting {}
+
 @MainActor public final class CalendarAppCoordinator {
     private let model: CalendarModel
     private let login: LoginItemController
-    private let menu: MenuBarController
+    private let menu: any CalendarPresenting
     private let reminders: ReminderCoordinator
     private var qaWindow: NSWindow?
     private var startup: Task<Void, Never>?
+    private var notificationIntentRevision = 0
+    private var resolvingNotification = false
+    private var notificationIntentUntil: TimeInterval = 0
+    private var now: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    // Coalesce nearby AppKit reopen callbacks; they do not identify their originating action.
+    private static let notificationReopenGrace: TimeInterval = 2
     public init(smoke: Bool = false, qa: Bool = false, qaNotifications: Bool = false, qaWindow: Bool = false, qaSeed: Date? = nil) {
         let access: CalendarAccessController
         let login: LoginItemController
@@ -44,6 +56,7 @@ import MenuBar
                 Task { await reminders?.updateContext(model.calendar.context) }
             }
         )
+        menu.onUserOpen = { [weak self] in self?.clearNotificationIntent() }
         if qa && qaWindow {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: 600), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "Calendar Bar · 합성 데이터 QA"
@@ -56,13 +69,40 @@ import MenuBar
         startup = Task { [weak reminders] in await reminders?.refresh() }
         model.refresh()
     }
+    init(model: CalendarModel, login: LoginItemController, reminders: ReminderCoordinator, menu: any CalendarPresenting, now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.model = model; self.login = login; self.reminders = reminders; self.menu = menu
+        self.now = now
+        menu.onUserOpen = { [weak self] in self?.clearNotificationIntent() }
+    }
     deinit { startup?.cancel() }
-    public func show() { menu.show() }
+    public func show() { clearNotificationIntent(); menu.show(resetToToday: true) }
+    public func reopen() {
+        let notificationIntent = resolvingNotification || now() < notificationIntentUntil
+        QAClickTrace.record(notificationIntent ? .reopenNotification : .reopenOrdinary)
+        menu.show(resetToToday: !notificationIntent)
+    }
+    private func clearNotificationIntent() {
+        notificationIntentRevision += 1
+        resolvingNotification = false
+        notificationIntentUntil = 0
+    }
     public func openReminder(token: String) async {
+        QAClickTrace.record(.routeBegin)
+        notificationIntentRevision += 1
+        let revision = notificationIntentRevision
+        resolvingNotification = true
+        notificationIntentUntil = now() + Self.notificationReopenGrace
+        defer {
+            if revision == notificationIntentRevision {
+                resolvingNotification = false
+                notificationIntentUntil = now() + Self.notificationReopenGrace
+            }
+        }
         // Open without resetting the selected date, both warm and cold.
         menu.show(resetToToday: false)
         qaWindow?.makeKeyAndOrderFront(nil)
         await model.routeReminder(token: token)
+        QAClickTrace.record(model.highlightedEventID != nil ? .routeHighlighted : model.navigationMessage != nil ? .routeMessage : .routeNoDestination)
     }
     public func becameActive() {
         login.refresh(); model.refresh()
