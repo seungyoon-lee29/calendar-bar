@@ -80,7 +80,6 @@ public final class MenuBarController: NSObject, NSPopoverDelegate {
 
     /// Notification navigation has already selected its destination.
     public func show(resetToToday: Bool = true) {
-        QAClickTrace.record(.showRequested)
         presentation.request(activate: { NSApp.activate() }) { [weak self] in
             self?.attemptPresentation(resetToToday: resetToToday) ?? true
         }
@@ -90,23 +89,21 @@ public final class MenuBarController: NSObject, NSPopoverDelegate {
         if popover.isShown { return true }
         statusItem.isVisible = true
         guard let button = statusItem.button, let window = button.window, window.isVisible,
-              !button.isHiddenOrHasHiddenAncestor else { QAClickTrace.record(.waitingAnchor); return false }
+              !button.isHiddenOrHasHiddenAncestor else { return false }
         let buttonFrame = window.convertToScreen(button.convert(button.bounds, to: nil))
         // A detached status item can have a visible window at (0, -22) with no screen.
         // Present only below the real menu bar icon, never from that placeholder.
-        guard Self.hasVisibleAnchor(buttonFrame, on: window.screen?.frame) else { QAClickTrace.record(.waitingAnchor); return false }
+        guard Self.hasVisibleAnchor(buttonFrame, on: window.screen?.frame) else { return false }
         refreshDate()
         if resetToToday { onOpen() }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
-        QAClickTrace.record(popover.isShown ? .showSucceeded : .showFailed)
         return popover.isShown
     }
 
-    public func close() { QAClickTrace.record(.closeRequested); presentation.cancel(); popover.performClose(nil) }
+    public func close() { presentation.cancel(); popover.performClose(nil) }
 
     public func popoverDidShow(_ notification: Notification) {
-        QAClickTrace.record(.popoverDidShow)
         removeClickMonitors()
         let clicks: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
         localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: clicks) { [weak self] event in
@@ -123,7 +120,7 @@ public final class MenuBarController: NSObject, NSPopoverDelegate {
         }
     }
 
-    public func popoverWillClose(_ notification: Notification) { QAClickTrace.record(.popoverWillClose); removeClickMonitors() }
+    public func popoverWillClose(_ notification: Notification) { removeClickMonitors() }
 
     private func removeClickMonitors() {
         if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }
@@ -133,7 +130,6 @@ public final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     @objc private func applicationDeactivated(_ notification: Notification) {
-        QAClickTrace.record(.deactivated)
         close()
     }
 
