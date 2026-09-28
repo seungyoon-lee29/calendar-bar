@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+from qa_preflight import preflight
 
 seconds = int(sys.argv[1])
 app = pathlib.Path(sys.argv[2]).resolve()
@@ -23,7 +24,8 @@ def owned():
 
 if owned():
     raise SystemExit('QA instance already running at this path')
-launcher = subprocess.Popen(['open', '-W', '-n', str(app), '--args', *sys.argv[3:]])
+preflight(app, info['CFBundleIdentifier'])
+launcher = subprocess.Popen(['open', '-W', str(app), '--args', *sys.argv[3:]])
 code = 0
 try:
     code = launcher.wait(timeout=seconds)
