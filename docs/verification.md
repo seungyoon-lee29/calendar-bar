@@ -121,3 +121,12 @@ Apple 캘린더에서 같은 Google 캘린더의 9/29 일정 개수·제목·시
 Runtime QA의 `~/Library/Application Support/local.ian.CalendarBar.runtime.qa/qa-launch.json`은 notifications=true, 합성 기준 Unix 1790572429다. `qa-reminders.json`에는 시험용 가까운 일정의 활성 규칙 1개가 남아 있다. 이전 Calendar Bar QA 식별자는 opt-in=false, 활성 규칙 0개다. 이 값은 앱 설정 의도이며 OS 대기·전달 상태와 동치가 아니다.
 
 자체 QA 프로세스와 보고 프로세스는 종료했다. watchdog은 소유 PID와 작업 경로를 확인하고 앱 부재 상태에서 중지했으므로 사용자가 알림 클릭으로 연 앱을 뒤늦게 종료하지 않는다. 최종 프로세스 검사에서 기존 `/Users/ian/Applications/CalendarBar.app/Contents/MacOS/CalendarBar` PID 98965만 유지됐다. 실제 클릭 확인 이후에 QA 알림과 규칙을 정리하고 QA 알림 허용을 시험 전 꺼짐으로 복원한다. 기능 완료·새 설치본 배포·push는 수행하지 않았다.
+
+
+### 반복 형식 변경·예외 복원 수정 검증
+
+현재 표시 형식과 독립된 원래 instant·civil 근거, 모호한 날짜 근거의 확인 필요·편집 차단, 같은 시리즈의 앞으로 경계 표현 계승, 저장된 개별 identity·anchor를 사용한 예외 해제를 추가 회귀 테스트로 확인했다. 조회용 대체 근거만 늘었으며 알림 설정 version 1 구조는 유지한다.
+
+수정 전용 체크아웃에서 실행한 `python3 scripts/verify.py`는 exit 0이다. `/tmp/calendar-format-restore-final-verify.log`에서 Swift 108개·기존 Python 정리 테스트 3개 및 release·서명 검증 통과를 확인했다. 이는 앞선 통합 체크아웃의 99개 Swift·5개 Python 결과와 실행 출처가 다르다. 최신 소스와 확장된 Python 정리 테스트 5개를 합친 프로젝트 루트의 전체 검증은 아직 결과 대기이며, 108개+5개 통과로 합산해 보고하지 않는다.
+
+이번 갱신에서는 문서 참조·차이만 검사했다. 실제 시험 알림 표시는 사용자 확인이 있고 콜드·웜 클릭은 여전히 답변 대기다. GUI 조작·QA 알림 정리·허용 복원을 수행하지 않았다.
