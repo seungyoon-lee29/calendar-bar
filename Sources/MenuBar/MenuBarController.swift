@@ -5,6 +5,7 @@ import AppKit
 @MainActor
 public final class MenuBarController: NSObject, NSPopoverDelegate {
     public let popover: NSPopover
+    public var onUserOpen: (() -> Void)?
     private let presentation = PopoverPresentation()
     private let statusItem: NSStatusItem
     private let onOpen: () -> Void
@@ -73,6 +74,7 @@ public final class MenuBarController: NSObject, NSPopoverDelegate {
 
     @objc public func togglePopover() {
         if popover.isShown { close(); return }
+        onUserOpen?()
         show(resetToToday: true)
     }
 

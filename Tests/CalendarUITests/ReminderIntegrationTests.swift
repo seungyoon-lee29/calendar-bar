@@ -2,7 +2,7 @@ import XCTest
 import CalendarCore
 @testable import CalendarAccess
 import CalendarNotifications
-import MenuBar
+@testable import MenuBar
 @testable import CalendarUI
 
 final class ReminderIntegrationTests: XCTestCase {
@@ -33,8 +33,24 @@ final class ReminderIntegrationTests: XCTestCase {
         XCTAssertFalse(production.qaNotifications)
     }
 
+    @MainActor func testOrdinaryReopenResetsBrowsingWithoutNotificationIntent() async {
+        let access = CalendarAccessController(backend: QACalendarBackend(), storage: QASelection(), observeChanges: false)
+        let reminders = ReminderCoordinator(access: access, storage: VolatileReminderStorage(), backend: QANotifications(), observeChanges: false)
+        let model = CalendarModel(access: access, reminders: reminders)
+        let fakeLogin = QALogin()
+        let menu = LifecyclePresentation(onOpen: { model.open() })
+        let coordinator = CalendarAppCoordinator(model: model, login: LoginItemController(backend: fakeLogin, store: fakeLogin), reminders: reminders, menu: menu)
+        model.select(Date().addingTimeInterval(3 * 86400))
+        model.searchText = "synthetic search"
+        model.showingSettings = true
+        coordinator.reopen()
+        XCTAssertEqual(model.calendar.selectedDate, model.calendar.today)
+        XCTAssertEqual(model.searchText, "")
+        XCTAssertFalse(model.showingSettings)
+    }
+
     @MainActor func testLifecycleReopenAfterNotificationPreservesDestinationAndSafeFailure() async throws {
-        let backend = MutableReminderCalendar()
+        let backend = MutableReminderCalendar(now: Date().addingTimeInterval(3 * 86400))
         let access = CalendarAccessController(backend: backend, storage: QASelection(), observeChanges: false)
         let reminders = ReminderCoordinator(access: access, storage: VolatileReminderStorage(), backend: QANotifications(), observeChanges: false)
         let model = CalendarModel(access: access, reminders: reminders)
@@ -44,28 +60,51 @@ final class ReminderIntegrationTests: XCTestCase {
         let token = try XCTUnwrap(reminders.settings.links.keys.first)
         let fakeLogin = QALogin()
         let menu = LifecyclePresentation(onOpen: { model.open() })
-        let coordinator = CalendarAppCoordinator(model: model, login: LoginItemController(backend: fakeLogin, store: fakeLogin), reminders: reminders, menu: menu)
+        var clock: TimeInterval = 100
+        let coordinator = CalendarAppCoordinator(model: model, login: LoginItemController(backend: fakeLogin, store: fakeLogin), reminders: reminders, menu: menu, now: { clock })
+        menu.ready = false
         await backend.delay()
         let routing = Task { await coordinator.openReminder(token: token) }
         for _ in 0..<100 where !model.isResolvingReminder { await Task.yield() }
         XCTAssertTrue(model.isResolvingReminder)
-        menu.shown = false
         coordinator.reopen()
+        menu.deactivate()
+        menu.ready = true
+        await Task.yield()
+        XCTAssertFalse(menu.shown, "Deactivation cancels presentation without reopening on readiness alone")
+        coordinator.reopen()
+        await menu.waitUntilIdle()
+        XCTAssertTrue(menu.shown)
         await routing.value
         XCTAssertEqual(model.highlightedEventID, event.id)
+        XCTAssertEqual(model.calendar.selectedDate, model.calendar.context.calendar.startOfDay(for: event.start))
         // Notification Center may dismiss the first presentation before the app reopen callback.
-        menu.shown = false
+        menu.deactivate()
+        clock += 1
+        XCTAssertFalse(menu.shown)
         coordinator.reopen()
+        XCTAssertTrue(menu.shown)
         XCTAssertEqual(model.highlightedEventID, event.id)
+        XCTAssertEqual(model.calendar.selectedDate, model.calendar.context.calendar.startOfDay(for: event.start))
+        menu.close()
+        clock += 1
+        coordinator.reopen()
+        XCTAssertEqual(model.calendar.selectedDate, model.calendar.today)
+        XCTAssertNil(model.highlightedEventID)
         await coordinator.openReminder(token: "unavailable-synthetic-token")
-        menu.shown = false
+        menu.close()
         coordinator.reopen()
         XCTAssertNotNil(model.navigationMessage)
         // Explicit menu opening continues to reset today and clear notification navigation.
-        menu.shown = false
-        coordinator.show()
+        menu.close()
+        menu.onUserOpen?()
+        menu.show(resetToToday: true)
         XCTAssertNil(model.highlightedEventID)
         XCTAssertNil(model.navigationMessage)
+        model.select(event.start)
+        menu.close()
+        coordinator.reopen()
+        XCTAssertEqual(model.calendar.selectedDate, model.calendar.today)
     }
 
     @MainActor func testColdAndWarmClickQueue() async {
@@ -270,7 +309,8 @@ final class ReminderIntegrationTests: XCTestCase {
     }
 }
 private actor MutableReminderCalendar: CalendarBackend {
-    let base = QACalendarBackend()
+    let base: QACalendarBackend
+    init(now: Date = Date()) { base = QACalendarBackend(now: now) }
     var permissionValue: CalendarPermission = .authorized
     var converted = false
     var delayed = false
@@ -303,12 +343,23 @@ private actor FailingNotifications: ReminderNotificationBackend {
 }
 
 @MainActor private final class LifecyclePresentation: CalendarPresenting {
+    private let presentation = PopoverPresentation(wait: { await Task.yield() })
+    var onUserOpen: (() -> Void)?
+    var ready = true
     var shown = false
     let onOpen: () -> Void
     init(onOpen: @escaping () -> Void) { self.onOpen = onOpen }
     func show(resetToToday: Bool) {
-        guard !shown else { return }
-        if resetToToday { onOpen() }
-        shown = true
+        presentation.request(activate: {}, attempt: { [weak self] in
+            guard let self else { return true }
+            guard ready else { return false }
+            guard !shown else { return true }
+            if resetToToday { onOpen() }
+            shown = true
+            return true
+        })
     }
+    func close() { presentation.cancel(); shown = false }
+    func deactivate() { close() }
+    func waitUntilIdle() async { await presentation.waitUntilIdle() }
 }
