@@ -48,6 +48,7 @@ public protocol CalendarBackend: Sendable {
     @ObservationIgnored private let backend: any CalendarBackend
     @ObservationIgnored private let storage: any CalendarSelectionStorage
     @ObservationIgnored private var epoch = 0
+    @ObservationIgnored private var queryRevision = 0
     @ObservationIgnored private var requestInFlight = false
     @ObservationIgnored private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     @ObservationIgnored private var streams: [UUID: AsyncStream<CalendarAccessChange>.Continuation] = [:]
@@ -94,12 +95,28 @@ public protocol CalendarBackend: Sendable {
     public func invalidate(reason: CalendarAccessChange) async {
         clearAll(state: .loading)
         emit(reason)
-        let ranges = snapshots.compactMap { channel, snapshot in snapshot.interval.map { (channel, $0) } }
-        if ranges.isEmpty {
-            permission = await backend.permission()
-            if permission != .authorized { calendars = []; clearAll(state: .connectionRequired) }
+        let global = epoch
+        let revision = queryRevision
+        if !snapshots.values.contains(where: { $0.interval != nil }) {
+            let access = await backend.permission()
+            guard epoch == global, queryRevision == revision else { return }
+            _ = acceptPermission(access)
+            return
         }
-        for (channel, interval) in ranges { await refresh(channel: channel, interval: interval) }
+        await refreshInvalidatedChannels()
+    }
+    private func refreshInvalidatedChannels(except preserved: CalendarQueryChannel? = nil) async {
+        let global = epoch
+        let pending = CalendarQueryChannel.allCases.filter { $0 != preserved }.compactMap { channel in
+            let snapshot = snapshot(for: channel)
+            return snapshot.interval.map { (channel, $0, snapshot.generation) }
+        }
+        for (channel, interval, generation) in pending {
+            guard epoch == global else { return }
+            // An explicit refresh while an earlier channel awaited always wins.
+            guard snapshot(for: channel).generation == generation else { continue }
+            await refresh(channel: channel, interval: interval)
+        }
     }
     public func setSelectedCalendarIDs(_ ids: Set<String>) async {
         selectedCalendarIDs = ids
@@ -127,6 +144,7 @@ public protocol CalendarBackend: Sendable {
     }
     public func refresh(interval: DateInterval) async { await refresh(channel: .month, interval: interval) }
     public func refresh(channel: CalendarQueryChannel, interval: DateInterval) async {
+        queryRevision += 1
         let revision = snapshot(for: channel).generation + 1
         let global = epoch
         snapshots[channel] = CalendarQuerySnapshot(interval: interval, generation: revision, state: .loading, events: [])
@@ -144,12 +162,14 @@ public protocol CalendarBackend: Sendable {
             let loaded = ids.isEmpty ? [] : try await CalendarRangeQuery.fetch(backend: backend, interval: interval, calendarIDs: ids)
             let access = await backend.permission()
             guard current(), acceptPermission(access) else { return }
-            if !calendars.isEmpty && calendars != available {
+            let descriptorsChanged = !calendars.isEmpty && calendars != available
+            if descriptorsChanged {
                 clearAll(state: .loading, except: channel)
                 emit(.eventStore)
             }
             calendars = available
             publish(available.isEmpty ? .noCalendars : ids.isEmpty ? .selectionRequired : .loaded, loaded)
+            if descriptorsChanged { await refreshInvalidatedChannels(except: channel) }
         } catch {
             let access = await backend.permission()
             guard current(), acceptPermission(access) else { return }
@@ -157,6 +177,7 @@ public protocol CalendarBackend: Sendable {
         }
     }
     public func resolve(identity: ReminderIdentity, anchor: OccurrenceAnchor?, isRecurring: Bool, searchInterval: DateInterval? = nil) async -> CalendarEventResolution {
+        guard CalendarResolution.isValid(anchor: anchor, searchInterval: searchInterval) else { return .failed }
         let global = epoch
         let access = await backend.permission()
         guard global == epoch else { return .outsideQuery }

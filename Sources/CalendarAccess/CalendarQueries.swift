@@ -54,6 +54,7 @@ public enum CalendarRangeQuery {
 public extension CalendarBackend {
     /// Default adapters cannot prove deletion outside their query coverage.
     func resolve(identity: ReminderIdentity, anchor: OccurrenceAnchor?, isRecurring: Bool, searchInterval: DateInterval?, calendarIDs: Set<String>) async throws -> CalendarEventResolution {
+        guard CalendarResolution.isValid(anchor: anchor, searchInterval: searchInterval) else { return .failed }
         guard calendarIDs.contains(identity.calendarID) else { return .outsideSelectedScope }
         guard let interval = searchInterval else { return .outsideQuery }
         let events = try await CalendarRangeQuery.fetch(backend: self, interval: interval, calendarIDs: [identity.calendarID])
@@ -61,6 +62,17 @@ public extension CalendarBackend {
     }
 }
 enum CalendarResolution {
+    static func isValid(anchor: OccurrenceAnchor?, searchInterval: DateInterval?) -> Bool {
+        if let searchInterval, !CalendarRangeQuery.isValid(searchInterval) { return false }
+        switch anchor {
+        case nil: return true
+        case .timed(let date): return date.timeIntervalSinceReferenceDate.isFinite
+        case .civil(let civil):
+            let context = CalendarContext(timeZone: .current)
+            guard let date = context.calendar.date(from: DateComponents(year: civil.year, month: civil.month, day: civil.day)), date.timeIntervalSinceReferenceDate.isFinite else { return false }
+            return CivilDate(date: date, context: context) == civil
+        }
+    }
     static func match(_ events: [EventOccurrence], identity: ReminderIdentity, anchor: OccurrenceAnchor?, isRecurring: Bool, absence: CalendarEventResolution) -> CalendarEventResolution {
         let scoped = events.filter { $0.calendarID == identity.calendarID }
         let candidates = scoped.filter { event in

@@ -228,6 +228,71 @@ import CalendarCore
         XCTAssertEqual(Set(values.compactMap(\.originalOccurrence)).count, 2)
         XCTAssertTrue(CalendarRangeQuery.isValid(DateInterval(start: .distantPast, end: .distantFuture)))
     }
+    func testInvalidationCannotRestartAnOlderRangeAfterSuspension() async {
+        let backend = FakeBackend()
+        backend.permissionValue = .authorized
+        backend.descriptors = [descriptor("a")]
+        let controller = CalendarAccessController(backend: backend, storage: MemorySelection(["a"]), observeChanges: false)
+        await controller.refresh(interval: interval)
+        await controller.refresh(channel: .search, interval: interval)
+        backend.suspendQueries = true
+        let invalidation = Task { await controller.invalidate(reason: .wake) }
+        await waitFor { backend.pending.count == 1 }
+        backend.suspendQueries = false
+        let newer = DateInterval(start: interval.end, duration: 100)
+        await controller.refresh(interval: newer)
+        await controller.refresh(channel: .search, interval: newer)
+        backend.pending[0].resume(returning: [])
+        await invalidation.value
+        XCTAssertEqual(controller.snapshot(for: .month).interval, newer)
+        XCTAssertEqual(controller.snapshot(for: .search).interval, newer)
+    }
+    func testDescriptorChangeRefreshesOtherChannelsWithoutStreamSubscriber() async {
+        let backend = FakeBackend()
+        backend.permissionValue = .authorized
+        backend.descriptors = [descriptor("a")]
+        let controller = CalendarAccessController(backend: backend, storage: MemorySelection(["a"]), observeChanges: false)
+        await controller.refresh(interval: interval)
+        backend.descriptors = [descriptor("a"), descriptor("b")]
+        await controller.refresh(channel: .search, interval: interval)
+        XCTAssertEqual(controller.state, .loaded)
+        XCTAssertEqual(backend.queries.count, 3)
+    }
+    func testEmptyInvalidationCannotOverwriteNewPermissionOrQuery() async {
+        let backend = FakeBackend()
+        backend.permissionValue = .authorized
+        backend.descriptors = [descriptor("a")]
+        backend.suspendNextPermission = true
+        let controller = CalendarAccessController(backend: backend, storage: MemorySelection(["a"]), observeChanges: false)
+        let invalidation = Task { await controller.invalidate(reason: .permission) }
+        await waitFor { backend.permissionContinuation != nil }
+        await controller.refresh(interval: interval)
+        backend.permissionContinuation?.resume(returning: .denied)
+        await invalidation.value
+        XCTAssertEqual(controller.permission, .authorized)
+        XCTAssertEqual(controller.state, .loaded)
+    }
+    func testResolveRejectsMalformedInputsBeforeEveryBackendPath() async throws {
+        let backend = FakeBackend()
+        backend.permissionValue = .authorized
+        backend.descriptors = [descriptor("a")]
+        let controller = CalendarAccessController(backend: backend, storage: MemorySelection(["a"]), observeChanges: false)
+        let identity = ReminderIdentity(calendarID: "a", localItemID: "item")
+        for recurring in [false, true] {
+            let civil = await controller.resolve(identity: identity, anchor: .civil(.init(year: 2026, month: 2, day: 30)), isRecurring: recurring)
+            XCTAssertEqual(civil, .failed)
+            let nonfinite = await controller.resolve(identity: identity, anchor: .timed(Date(timeIntervalSinceReferenceDate: .infinity)), isRecurring: recurring)
+            XCTAssertEqual(nonfinite, .failed)
+            let empty = await controller.resolve(identity: identity, anchor: nil, isRecurring: recurring, searchInterval: DateInterval(start: interval.start, duration: 0))
+            XCTAssertEqual(empty, .failed)
+            let native = try await EventKitBackend().resolve(identity: identity, anchor: .civil(.init(year: 2026, month: 2, day: 30)), isRecurring: recurring, searchInterval: nil, calendarIDs: ["a"])
+            XCTAssertEqual(native, .failed)
+            let nativeEmpty = try await EventKitBackend().resolve(identity: identity, anchor: nil, isRecurring: recurring, searchInterval: DateInterval(start: interval.start, duration: 0), calendarIDs: ["a"])
+            XCTAssertEqual(nativeEmpty, .failed)
+            let defaultAdapter = try await backend.resolve(identity: identity, anchor: .civil(.init(year: 2026, month: 2, day: 30)), isRecurring: recurring, searchInterval: nil, calendarIDs: ["a"])
+            XCTAssertEqual(defaultAdapter, .failed)
+        }
+    }
     private func waitFor(_ predicate: () -> Bool) async {
         for _ in 0..<10000 { if predicate() { return }; await Task.yield() }
         XCTFail("Async operation did not reach expected checkpoint")
@@ -256,7 +321,15 @@ import CalendarCore
     var requestContinuation: CheckedContinuation<Void, Never>?
     var fail = false
     var failOnQuery: Int?
-    func permission() async -> CalendarPermission { permissionValue }
+    var suspendNextPermission = false
+    var permissionContinuation: CheckedContinuation<CalendarPermission, Never>?
+    func permission() async -> CalendarPermission {
+        if suspendNextPermission {
+            suspendNextPermission = false
+            return await withCheckedContinuation { permissionContinuation = $0 }
+        }
+        return permissionValue
+    }
     func requestAccess() async throws { if suspendRequest { await withCheckedContinuation { requestContinuation = $0 } } }
     func calendars() async throws -> [CalendarDescriptor] { descriptors }
     func events(interval: DateInterval, calendarIDs: Set<String>) async throws -> [EventOccurrence] {

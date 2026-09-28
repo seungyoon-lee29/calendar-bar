@@ -57,6 +57,7 @@ public actor EventKitBackend: CalendarBackend {
             isRecurring: recurring, originalOccurrence: anchor, confirmedSeriesKey: series)
     }
     public func resolve(identity: ReminderIdentity, anchor: OccurrenceAnchor?, isRecurring: Bool, searchInterval: DateInterval?, calendarIDs: Set<String>) async throws -> CalendarEventResolution {
+        guard CalendarResolution.isValid(anchor: anchor, searchInterval: searchInterval) else { return .failed }
         guard permission() == .authorized else { return .connectionRequired }
         guard calendarIDs.contains(identity.calendarID) else { return .outsideSelectedScope }
         let local = store.calendarItem(withIdentifier: identity.localItemID) as? EKEvent
