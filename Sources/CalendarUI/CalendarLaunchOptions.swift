@@ -2,6 +2,13 @@ import Foundation
 
 /// A QA bundle stays isolated when macOS launches it without command-line arguments.
 public struct CalendarLaunchOptions {
+    public enum NotificationReportMode: Equatable { case none, denied, readOnly }
+    /// Evaluated before constructing launch options, which can persist QA settings.
+    public static func notificationReportMode(arguments: [String], bundleID: String?) -> NotificationReportMode {
+        guard arguments.contains("--qa-notification-report") else { return .none }
+        return bundleID?.hasSuffix(".qa") == true ? .readOnly : .denied
+    }
+
     public let qa: Bool
     public let smoke: Bool
     public let qaNotifications: Bool
