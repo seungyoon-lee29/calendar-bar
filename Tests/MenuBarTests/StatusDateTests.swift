@@ -7,6 +7,12 @@ final class StatusDateTests: XCTestCase {
         XCTAssertEqual(StatusDate.day(at: date, timeZone: TimeZone(secondsFromGMT: 0)!), 28)
         XCTAssertEqual(StatusDate.day(at: date, timeZone: TimeZone(secondsFromGMT: 9 * 3600)!), 29)
     }
+    func testNextMidnightAfterDayStartingAtOneResetsToMidnight() {
+        let zone = TimeZone(identifier: "America/Asuncion")!
+        let noon = ISO8601DateFormatter().date(from: "2023-10-01T15:00:00Z")!
+        let expected = ISO8601DateFormatter().date(from: "2023-10-02T03:00:00Z")!
+        XCTAssertEqual(StatusDate.nextMidnight(after: noon, timeZone: zone), expected)
+    }
     func testNextMidnightAcrossDaylightSavingIsCalendarBased() {
         let zone = TimeZone(identifier: "America/Los_Angeles")!
         let start = ISO8601DateFormatter().date(from: "2026-03-08T08:00:00Z")!

@@ -1,6 +1,7 @@
 import XCTest
 import CalendarCore
 import CalendarAccess
+import MenuBar
 @testable import CalendarUI
 
 final class CalendarModelTests: XCTestCase {
@@ -39,7 +40,44 @@ final class CalendarModelTests: XCTestCase {
         let event = EventOccurrence(calendarID: "c", calendarName: "", color: color, eventID: "e", title: "", start: date("2026-12-02"), end: date("2026-12-04"), isAllDay: false)
         XCTAssertEqual(model.timeLabel(event), "진행 중")
         let allDay = EventOccurrence(calendarID: "c", calendarName: "", color: color, eventID: "a", title: "", start: date("2026-12-02"), end: date("2026-12-04"), isAllDay: true)
+        XCTAssertEqual(model.timeLabel(allDay), "종일 · 진행 중")
+        model.select(date("2026-12-02"))
         XCTAssertEqual(model.timeLabel(allDay), "종일")
+        await model.waitForRefresh()
+    }
+    @MainActor func testPendingLoginRegistrationCanBeCancelledAndStaysOffOnNextLaunch() async {
+        let backend = LoginBackend(), store = LoginStore()
+        backend.state = .requiresApproval
+        let login = LoginItemController(backend: backend, store: store)
+        let model = CalendarModel(access: CalendarAccessController(backend: EmptyBackend(), storage: MemorySelection(), observeChanges: false))
+        let view = CalendarPopover(model: model, login: login)
+        let binding = view.loginToggleBinding
+
+        XCTAssertFalse(binding.wrappedValue)
+        XCTAssertEqual(login.state, .requiresApproval)
+        view.cancelPendingLoginRegistration()
+
+        XCTAssertEqual(backend.unregistrations, 1)
+        XCTAssertEqual(backend.registrations, 0)
+        XCTAssertEqual(login.state, .disabled)
+        XCTAssertFalse(binding.wrappedValue)
+        let nextLaunch = LoginItemController(backend: backend, store: store)
+        nextLaunch.initializeForLaunch()
+        XCTAssertEqual(nextLaunch.state, .disabled)
+        XCTAssertEqual(backend.registrations, 0)
+    }
+
+    @MainActor func testLoginSwitchReflectsRefreshedSystemState() async {
+        let backend = LoginBackend()
+        let login = LoginItemController(backend: backend, store: LoginStore())
+        let model = CalendarModel(access: CalendarAccessController(backend: EmptyBackend(), storage: MemorySelection(), observeChanges: false))
+        let binding = CalendarPopover(model: model, login: login).loginToggleBinding
+        for (state, expected) in [(LoginItemState.disabled, false), (.enabled, true), (.requiresApproval, false), (.failure("Unavailable"), false)] {
+            backend.state = state
+            login.refresh()
+            XCTAssertEqual(binding.wrappedValue, expected)
+            XCTAssertEqual(login.state, state)
+        }
     }
     func date(_ value: String) -> Date { ISO8601DateFormatter().date(from: value + "T00:00:00Z")! }
 }
@@ -66,4 +104,16 @@ private actor RecordingBackend: CalendarBackend {
 @MainActor private final class SelectedCalendar: CalendarSelectionStorage {
     func load() -> Set<String> { ["c"] }
     func save(_ ids: Set<String>) {}
+}
+
+@MainActor private final class LoginBackend: LoginItemBackend {
+    var state: LoginItemState = .disabled
+    var registrations = 0
+    var unregistrations = 0
+    func currentState() throws -> LoginItemState { state }
+    func register() throws { registrations += 1; state = .enabled }
+    func unregister() throws { unregistrations += 1; state = .disabled }
+}
+@MainActor private final class LoginStore: LoginItemInitializationStore {
+    var hasInitializedLoginItem = false
 }

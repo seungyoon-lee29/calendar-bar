@@ -8,6 +8,10 @@ import ServiceManagement
 @MainActor struct CalendarPopover: View {
     @Bindable var model: CalendarModel
     @ObservedObject var login: LoginItemController
+    var loginToggleBinding: Binding<Bool> {
+        Binding(get: { login.state == .enabled }, set: { login.setEnabled($0) })
+    }
+    func cancelPendingLoginRegistration() { login.setEnabled(false) }
     var body: some View {
         VStack(spacing: 0) {
             if model.showingSettings { settings } else { calendarPage }
@@ -70,7 +74,7 @@ import ServiceManagement
                     .font(.system(size: 13, weight: today ? .semibold : .regular))
                     .foregroundStyle(today ? Color.white : inMonth ? Color.primary : Color.secondary.opacity(0.45))
                     .frame(width: 29, height: 29)
-                    .background { if today { Circle().fill(Color.accentColor) } }
+                    .background { if today { Circle().fill(Color.blue) } }
                     .overlay { if selected && !today { Circle().stroke(Color.secondary.opacity(0.45), lineWidth: 1) } }
                 HStack(spacing: 2) {
                     ForEach(Array(colors.prefix(3).enumerated()), id: \.offset) { _, color in Circle().fill(Color(color)).frame(width: 3, height: 3) }
@@ -163,10 +167,11 @@ import ServiceManagement
                 }
             }
             Divider()
-            Toggle("로그인 시 실행", isOn: Binding(get: { login.state == .enabled }, set: { login.setEnabled($0) })).toggleStyle(.switch).font(.system(size: 12))
+            Toggle("로그인 시 실행", isOn: loginToggleBinding).toggleStyle(.switch).font(.system(size: 12))
             if login.state == .requiresApproval {
                 Text("시스템 설정에서 로그인 항목을 승인해 주세요.").font(.caption).foregroundStyle(.secondary)
                 Button("로그인 항목 설정") { SMAppService.openSystemSettingsLoginItems() }
+                Button("등록 취소", action: cancelPendingLoginRegistration)
             }
             if case .failure(let message) = login.state {
                 Text(message).font(.caption).foregroundStyle(.secondary)
