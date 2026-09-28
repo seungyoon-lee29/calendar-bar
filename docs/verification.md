@@ -127,6 +127,6 @@ Runtime QA의 `~/Library/Application Support/local.ian.CalendarBar.runtime.qa/qa
 
 현재 표시 형식과 독립된 원래 instant·civil 근거, 모호한 날짜 근거의 확인 필요·편집 차단, 같은 시리즈의 앞으로 경계 표현 계승, 저장된 개별 identity·anchor를 사용한 예외 해제를 추가 회귀 테스트로 확인했다. 조회용 대체 근거만 늘었으며 알림 설정 version 1 구조는 유지한다.
 
-수정 전용 체크아웃에서 실행한 `python3 scripts/verify.py`는 exit 0이다. `/tmp/calendar-format-restore-final-verify.log`에서 Swift 108개·기존 Python 정리 테스트 3개 및 release·서명 검증 통과를 확인했다. 이는 앞선 통합 체크아웃의 99개 Swift·5개 Python 결과와 실행 출처가 다르다. 최신 소스와 확장된 Python 정리 테스트 5개를 합친 프로젝트 루트의 전체 검증은 아직 결과 대기이며, 108개+5개 통과로 합산해 보고하지 않는다.
+수정 전용 체크아웃에서 실행한 `python3 scripts/verify.py`는 exit 0이다. `/tmp/calendar-format-restore-final-verify.log`에서 Swift 108개·기존 Python 정리 테스트 3개 및 release·서명 검증 통과를 확인했다. 이는 앞선 통합 체크아웃의 99개 Swift·5개 Python 결과와 실행 출처가 다르다. 이후 2026-09-28 프로젝트 루트에서 `python3 scripts/verify.py`를 다시 실행해 exit 0을 확인했다. 이 단일 통합 실행에서 Swift 108개·Python 정리 테스트 5개·release 빌드·서명 검증이 모두 통과했다. 서로 다른 실행 결과를 합산한 수치가 아니다.
 
 이번 갱신에서는 문서 참조·차이만 검사했다. 실제 시험 알림 표시는 사용자 확인이 있고 콜드·웜 클릭은 여전히 답변 대기다. GUI 조작·QA 알림 정리·허용 복원을 수행하지 않았다.
