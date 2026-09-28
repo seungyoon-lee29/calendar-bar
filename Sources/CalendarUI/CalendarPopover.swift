@@ -18,9 +18,17 @@ import ServiceManagement
     func cancelPendingLoginRegistration() { login.setEnabled(false) }
     var body: some View {
         VStack(spacing: 0) {
-            if model.showingSettings { settings } else { calendarPage }
+            if model.showingSettings { settings } else {
+                searchHeader
+                if let message = model.navigationMessage {
+                    Text(message).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.bottom, 8)
+                }
+                if model.isSearching { searchPage }
+                else if model.tab == .upcoming { upcomingPage }
+                else { calendarPage }
+            }
         }
-        .frame(width: 340, height: 520)
+        .frame(width: 340, height: 600)
         .background(Color(nsColor: .windowBackgroundColor))
         .onDisappear { resetPaging() }
         .onChange(of: model.presentationID) { _, _ in resetPaging() }
@@ -129,26 +137,26 @@ import ServiceManagement
             if model.selectedEvents.isEmpty {
                 VStack { Spacer(); Text("일정 없음").font(.system(size: 13)).foregroundStyle(.secondary); Spacer() }
             } else {
+                ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
                         ForEach(model.selectedEvents) { event in
-                            HStack(alignment: .top, spacing: 10) {
-                                RoundedRectangle(cornerRadius: 2).fill(Color(event.color)).frame(width: 3, height: 29)
-                                Text(model.timeLabel(event)).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 62, alignment: .leading)
-                                Text(event.title).font(.system(size: 12, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-                                Spacer(minLength: 0)
-                            }
+                            EventDisplayRow(event: event, time: model.timeLabel(event), highlighted: model.highlightedEventID == event.id, action: nil, reminder: { model.selectedReminderEvent = event }).id(event.id)
                         }
                     }.padding(.horizontal, 20).padding(.bottom, 12)
+                }
+                .onAppear { if let id = model.highlightedEventID { proxy.scrollTo(id, anchor: .center) } }
+                .onChange(of: model.highlightedEventID) { _, id in if let id { proxy.scrollTo(id, anchor: .center) } }
                 }
             }
         case .loading: ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
         default: accessMessage.padding(.horizontal, 20)
         }
     }
-    @ViewBuilder private var accessMessage: some View {
+    private var accessMessage: some View { stateMessage(model.access.state, retry: model.refresh) }
+    @ViewBuilder private func stateMessage(_ state: CalendarViewState, retry: @escaping () -> Void) -> some View {
         VStack(spacing: 8) {
-            switch model.access.state {
+            switch state {
             case .connectionRequired:
                 if model.access.permission == .denied || model.access.permission == .restricted {
                     Text("캘린더 접근이 허용되지 않았습니다.")
@@ -167,10 +175,88 @@ import ServiceManagement
                 Button("캘린더 선택") { model.showingSettings = true }
             case .failed:
                 Text("캘린더를 불러오지 못했습니다.")
-                Button("다시 시도") { model.refresh() }
+                Button("다시 시도", action: retry)
             default: EmptyView()
             }
         }.font(.system(size: 12)).multilineTextAlignment(.center).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    private var searchHeader: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("일정 검색", text: $model.searchText).textFieldStyle(.plain).accessibilityLabel("일정 검색")
+                if !model.searchText.isEmpty {
+                    Button { model.searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain).accessibilityLabel("검색 지우기")
+                }
+            }.padding(8).background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+            Picker("보기", selection: Binding(get: { model.tab }, set: { model.setTab($0) })) {
+                ForEach(CalendarTab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }.pickerStyle(.segmented)
+        }.padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 8)
+    }
+    private var searchPage: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            DatePicker("시작", selection: $model.searchStart, displayedComponents: .date)
+            DatePicker("종료", selection: $model.searchEnd, displayedComponents: .date)
+            if model.searchInterval == nil {
+                Text("종료일은 시작일 이후여야 합니다.").font(.caption).foregroundStyle(.red)
+                Spacer()
+            } else {
+                Text("\(model.formatted(model.searchStart, "yyyy.MM.dd")) – \(model.formatted(model.searchEnd, "yyyy.MM.dd")) · \(model.searchState == .loaded ? "\(model.searchResults.count)개" : "조회 중")")
+                    .font(.caption).foregroundStyle(.secondary)
+                Divider()
+                if model.searchState == .loaded {
+                    if model.searchResults.isEmpty { emptyMessage("검색 결과 없음") }
+                    else {
+                        ScrollView {
+                            LazyVStack(spacing: 14) {
+                                ForEach(model.searchResults) { event in
+                                    EventDisplayRow(event: event, time: resultTime(event), highlighted: false,
+                                        action: { Task { await model.activate(event, interval: model.searchInterval) } },
+                                        reminder: { model.selectedReminderEvent = event })
+                                }
+                            }.padding(.vertical, 5)
+                        }
+                    }
+                } else if model.searchState == .loading { loading }
+                else { stateMessage(model.searchState, retry: model.scheduleSearch) }
+            }
+        }.padding(.horizontal, 16).padding(.bottom, 16)
+    }
+    private var upcomingPage: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("\(model.formatted(model.agendaInterval.start, "M월 d일"))부터 \(model.formatted(model.agendaInterval.end.addingTimeInterval(-1), "M월 d일"))까지")
+                .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            if model.agendaState == .loaded {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        if model.agendaGroups.isEmpty { Text("예정 일정 없음").foregroundStyle(.secondary) }
+                        ForEach(model.agendaGroups) { group in
+                            Text(model.formatted(group.day, "M월 d일 EEEE")).font(.system(size: 13, weight: .semibold)).accessibilityAddTraits(.isHeader)
+                            ForEach(group.events) { event in
+                                EventDisplayRow(event: event, time: agendaTime(event, day: group.day), highlighted: false,
+                                    action: { Task { await model.activate(event, interval: model.agendaInterval) } },
+                                    reminder: { model.selectedReminderEvent = event })
+                            }
+                            Divider()
+                        }
+                        Button("30일 더 보기") { model.loadMoreAgenda() }.frame(maxWidth: .infinity)
+                    }.padding(.vertical, 5)
+                }
+            } else if model.agendaState == .loading { loading }
+            else { stateMessage(model.agendaState, retry: model.refreshAgenda) }
+        }.padding(16)
+    }
+    private var loading: some View { ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity) }
+    private func emptyMessage(_ message: String) -> some View { Text(message).font(.system(size: 13)).foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity) }
+    private func resultTime(_ event: EventOccurrence) -> String {
+        model.formatted(event.start, "M/d") + " " + (event.isAllDay ? "종일" : model.formatted(event.start, "HH:mm"))
+    }
+    private func agendaTime(_ event: EventOccurrence, day: Date) -> String {
+        if event.isAllDay { return event.start < day ? "종일 · 진행 중" : "종일" }
+        return event.start < day ? "진행 중" : model.formatted(event.start, "HH:mm")
     }
     private var settings: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -223,6 +309,33 @@ import ServiceManagement
     }
     private func openSettings(_ url: String) { if let url = URL(string: url) { NSWorkspace.shared.open(url) } }
 }
-private extension Color {
+extension Color {
     init(_ color: RGBAColor) { self.init(.sRGB, red: color.red, green: color.green, blue: color.blue, opacity: color.alpha) }
+}
+
+@MainActor private struct EventDisplayRow: View {
+    let event: EventOccurrence
+    let time: String
+    let highlighted: Bool
+    let action: (() -> Void)?
+    let reminder: () -> Void
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            if let action { Button(action: action) { content }.buttonStyle(.plain) }
+            else { content }
+            Button(action: reminder) { Image(systemName: "bell").foregroundStyle(.secondary) }
+                .buttonStyle(.plain).accessibilityLabel("알림 설정: " + event.title)
+        }.padding(4).background(highlighted ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 4))
+    }
+    private var content: some View {
+        HStack(alignment: .top, spacing: 8) {
+            RoundedRectangle(cornerRadius: 2).fill(Color(event.color)).frame(width: 3, height: 29)
+            Text(time).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 66, alignment: .leading)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(event.title).font(.system(size: 12, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                Text(event.calendarName).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }.contentShape(Rectangle()).frame(maxWidth: .infinity, alignment: .leading)
+    }
 }
