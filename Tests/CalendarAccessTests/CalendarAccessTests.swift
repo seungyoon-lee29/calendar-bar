@@ -272,6 +272,21 @@ import CalendarCore
         XCTAssertEqual(controller.permission, .authorized)
         XCTAssertEqual(controller.state, .loaded)
     }
+    func testEmptyInvalidationCannotOverwriteNewerResolutionPermission() async {
+        let backend = FakeBackend()
+        backend.permissionValue = .authorized
+        backend.descriptors = [descriptor("a")]
+        backend.suspendNextPermission = true
+        let controller = CalendarAccessController(backend: backend, storage: MemorySelection(["a"]), observeChanges: false)
+        let invalidation = Task { await controller.invalidate(reason: .permission) }
+        await waitFor { backend.permissionContinuation != nil }
+        let result = await controller.resolve(identity: .init(calendarID: "a", localItemID: "item"), anchor: nil, isRecurring: false)
+        XCTAssertEqual(result, .outsideQuery)
+        XCTAssertEqual(controller.permission, .authorized)
+        backend.permissionContinuation?.resume(returning: .denied)
+        await invalidation.value
+        XCTAssertEqual(controller.permission, .authorized)
+    }
     func testResolveRejectsMalformedInputsBeforeEveryBackendPath() async throws {
         let backend = FakeBackend()
         backend.permissionValue = .authorized

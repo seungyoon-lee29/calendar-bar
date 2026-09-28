@@ -178,6 +178,9 @@ public protocol CalendarBackend: Sendable {
     }
     public func resolve(identity: ReminderIdentity, anchor: OccurrenceAnchor?, isRecurring: Bool, searchInterval: DateInterval? = nil) async -> CalendarEventResolution {
         guard CalendarResolution.isValid(anchor: anchor, searchInterval: searchInterval) else { return .failed }
+        // A real read supersedes an earlier idle permission probe. This counter
+        // does not cancel independent channel reads or other resolutions.
+        queryRevision += 1
         let global = epoch
         let access = await backend.permission()
         guard global == epoch else { return .outsideQuery }
