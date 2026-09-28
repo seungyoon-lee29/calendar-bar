@@ -130,3 +130,7 @@ Runtime QA의 `~/Library/Application Support/local.ian.CalendarBar.runtime.qa/qa
 수정 전용 체크아웃에서 실행한 `python3 scripts/verify.py`는 exit 0이다. `/tmp/calendar-format-restore-final-verify.log`에서 Swift 108개·기존 Python 정리 테스트 3개 및 release·서명 검증 통과를 확인했다. 이는 앞선 통합 체크아웃의 99개 Swift·5개 Python 결과와 실행 출처가 다르다. 이후 2026-09-28 프로젝트 루트에서 `python3 scripts/verify.py`를 다시 실행해 exit 0을 확인했다. 이 단일 통합 실행에서 Swift 108개·Python 정리 테스트 5개·release 빌드·서명 검증이 모두 통과했다. 서로 다른 실행 결과를 합산한 수치가 아니다.
 
 이번 갱신에서는 문서 참조·차이만 검사했다. 실제 시험 알림 표시는 사용자 확인이 있고 콜드·웜 클릭은 여전히 답변 대기다. GUI 조작·QA 알림 정리·허용 복원을 수행하지 않았다.
+
+### 사용자 알림 클릭 결과
+
+사용자는 시험 미리 알림이 표시된다고 확인한 뒤, 누르면 사라지고 끝나며 달력이 열리지 않는다고 보고했다. 이 결과를 실제 클릭 성공으로 처리하지 않는다. 시험 예약 전 앱 부재와 클릭 후 새 QA 프로세스 실행은 확인했지만, 이후 컴퓨터 사용 도구가 읽은 팝오버는 도구 활성화의 영향을 받을 수 있다. 클릭 진입·화면 준비·날짜 전달을 분리해 진단하고 수정 후 실제 클릭을 다시 확인한다.
