@@ -72,6 +72,12 @@ public final class MenuBarController: NSObject, NSPopoverDelegate {
 
     @objc public func togglePopover() {
         if popover.isShown { close(); return }
+        show(resetToToday: true)
+    }
+
+    /// Notification navigation has already selected its destination.
+    public func show(resetToToday: Bool = true) {
+        if popover.isShown { return }
         statusItem.isVisible = true
         guard let button = statusItem.button, let window = button.window, window.isVisible,
               !button.isHiddenOrHasHiddenAncestor else { return }
@@ -80,7 +86,7 @@ public final class MenuBarController: NSObject, NSPopoverDelegate {
         // Present only below the real menu bar icon, never from that placeholder.
         guard Self.hasVisibleAnchor(buttonFrame, on: window.screen?.frame) else { return }
         refreshDate()
-        onOpen()
+        if resetToToday { onOpen() }
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
