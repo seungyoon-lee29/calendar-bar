@@ -45,3 +45,19 @@ Apple 캘린더에서 같은 Google 캘린더의 9/29 일정 개수·제목·시
 동일 설치본을 앱의 종료 버튼으로 종료한 뒤 다시 열어 캘린더 접근과 선택이 유지되고 정상 0건 상태로 돌아오는 것을 확인했다. Google 9/29 일정 2개와 9/17 종일 일정 1개의 표시를 최종 UI에서 읽었다. 2026년 8월의 6주 배치를 캡처하여 마지막 주와 일정 영역이 함께 보이는지 확인했다.
 
 실제 설치본의 로그인 실행 스위치를 켠 뒤 시스템 조회 상태가 enabled로 바뀌는 것을 확인했다. 최초 상태 notFound를 실패 표시로 처리하면서 초기 등록을 건너뛰는 코드 경로를 발견하여 최초 실행은 enabled/승인 대기 이외 상태에서 등록을 시도하도록 고쳤다. 회귀 테스트 실패→통과를 확인했다. 실제 로그아웃/재로그인은 수행하지 않았다.
+
+## 수정 위치
+
+| 확인한 문제 | 현재 수정 위치 |
+|---|---|
+| 자정 건너뛰기 월 격자 | `Sources/CalendarCore/CalendarState.swift:23` |
+| 빈 제목 괄호 | `Sources/CalendarCore/EventOccurrence.swift:42` |
+| 앱 진입 main actor | `Sources/CalendarBar/main.swift:26` |
+| 승인 대기 등록 취소 | `Sources/CalendarUI/CalendarPopover.swift:174` |
+| 종일 연속 일정 구분 | `Sources/CalendarUI/CalendarModel.swift:56` |
+| 오늘 고정 파랑 | `Sources/CalendarUI/CalendarPopover.swift:77` |
+| 다음 자정 보정 | `Sources/MenuBar/StatusDate.swift:10` |
+| 하위 프로세스 정리 | `scripts/run.py:38` |
+| 화면 없는 팝오버 기준점 | `Sources/MenuBar/MenuBarController.swift:81` |
+| 외부 클릭·비활성화 닫기 | `Sources/MenuBar/MenuBarController.swift:91` |
+| 최초 notFound 상태 등록 | `Sources/MenuBar/LoginItemController.swift:78` |
