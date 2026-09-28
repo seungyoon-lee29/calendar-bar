@@ -19,6 +19,12 @@ public enum OccurrenceAnchor: Codable, Hashable, Sendable {
         if case .timed = self, case .civil = other { return true }
         return isBefore(other)
     }
+    public func hasSameKind(as other: Self) -> Bool {
+        switch (self, other) {
+        case (.timed, .timed), (.civil, .civil): return true
+        default: return false
+        }
+    }
     public func isBefore(_ other: Self) -> Bool {
         switch (self, other) {
         case let (.timed(a), .timed(b)): return a < b
@@ -119,6 +125,11 @@ public struct ReminderRules: Codable, Equatable, Sendable {
     public private(set) var rules: [ReminderRule]
     public init(rules: [ReminderRule] = []) { self.rules = rules }
     public mutating func replace(with rule: ReminderRule) throws {
+        // A civil boundary and an instant cannot be ordered without occurrence
+        // evidence. Editors must reuse the series' established representation.
+        if rule.scope == .thisAndFuture, rules.contains(where: { $0.scope == .thisAndFuture && $0.identity.matchesSeries(rule.identity) && !$0.anchor.hasSameKind(as: rule.anchor) }) {
+            throw CalendarValueError.invalidAnchor
+        }
         rules.removeAll { old in
             guard old.scope == rule.scope else { return false }
             if rule.scope == .thisOccurrence { return old.identity.matchesOccurrenceItem(rule.identity) && old.anchor == rule.anchor }
@@ -150,9 +161,27 @@ public struct ReminderRules: Codable, Equatable, Sendable {
             removeOverride(identity: event.reminderIdentity, anchor: rule.anchor)
         }
     }
+    /// Reuse the series representation even before its first saved boundary.
+    /// Ambiguous civil evidence or preexisting mixed representations cannot be
+    /// used to claim a successful future-rule replacement.
+    public func futureEditingAnchor(event: EventOccurrence, context: CalendarContext) -> OccurrenceAnchor? {
+        let future = rules.filter { $0.scope == .thisAndFuture && $0.identity.matchesSeries(event.reminderIdentity) }
+        guard let first = future.first else {
+            guard let anchor = event.reminderAnchor(context: context), !event.ambiguousOriginalOccurrences.contains(anchor) else { return nil }
+            return anchor
+        }
+        guard future.allSatisfy({ $0.anchor.hasSameKind(as: first.anchor) }),
+              let anchor = event.originalAnchor(matching: first.anchor), !event.ambiguousOriginalOccurrences.contains(anchor) else { return nil }
+        return anchor
+    }
     public func needsIdentityConfirmation(event: EventOccurrence) -> Bool {
         // An exact override wins before a less precise series/civil rule.
         if rules.contains(where: { $0.scope == .thisOccurrence && $0.identity.matchesOccurrenceItem(event.reminderIdentity) && event.matchesOriginalAnchor($0.anchor) }) { return false }
+        let future = rules.filter { rule in
+            guard rule.scope == .thisAndFuture, rule.identity.matchesSeries(event.reminderIdentity), let anchor = event.originalAnchor(matching: rule.anchor) else { return false }
+            return rule.anchor == anchor || rule.anchor.isBefore(anchor)
+        }
+        if let first = future.first, future.contains(where: { !$0.anchor.hasSameKind(as: first.anchor) }) { return true }
         return rules.contains { rule in
             guard rule.identity.matchesOccurrenceItem(event.reminderIdentity),
                   let anchor = event.originalAnchor(matching: rule.anchor), event.ambiguousOriginalOccurrences.contains(anchor) else { return false }
