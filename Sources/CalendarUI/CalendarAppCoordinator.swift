@@ -20,6 +20,8 @@ import MenuBar
             onDateChange: { model.dateChanged($0) }
         )
     }
-    public func show() { menu.togglePopover() }
+    public func show() {
+        if !menu.popover.isShown { menu.togglePopover() }
+    }
     public func becameActive() { login.refresh(); model.refresh() }
 }
