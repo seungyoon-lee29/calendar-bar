@@ -1,6 +1,6 @@
 # 남은 확인 사항
 
-- 메뉴막대 표시 연결: Orca 표시를 끄면 CalendarBar 개별 허용이 켜져 있어도 blocked host가 되는 현상을 재현했다. 2026-09-28 ControlCenter `trackedApplications`의 Orca 항목에 정상·QA·Runtime QA CalendarBar 세 식별자가 함께 저장된 것을 확인하고, 17:42 해당 세 연결만 제거했다. 원본 Data의 권한 0600 백업과 쓰기 직전 동일성 검사, 단일 키 쓰기 exit 0, 구조 차이가 세 연결 삭제뿐임과 다른 키·허용 상태 보존, 별도 재조회에서 수정 유지까지 확인했다. 실제 Orca 표시 끄기에서 아이콘·팝오버 유지와 앱 재실행 후 연결 재생성 여부는 아직 미검증이므로 해결 완료로 처리하지 않는다. 전역 초기화·ControlCenter 재시작·로그인/알림 설정 변경은 수행하지 않았다.
+- 메뉴막대 표시 연결: Orca 표시를 끄면 CalendarBar 개별 허용이 켜져 있어도 blocked host가 되는 현상을 재현했다. 2026-09-28 ControlCenter `trackedApplications`의 Orca 항목에 정상·QA·Runtime QA CalendarBar 세 식별자가 함께 저장된 것을 확인하고, 17:42 해당 세 연결만 제거했다. 원본 Data의 권한 0600 백업과 쓰기 직전 동일성 검사, 단일 키 쓰기 exit 0, 구조 차이가 세 연결 삭제뿐임과 다른 키·허용 상태 보존, 별도 재조회에서 수정 유지까지 확인했다. 후속 검증에서 Orca=false 상태의 정상 앱 개별 표시 off→on에 blocked→unblocking→tracking이 발생했고, canonical Runtime QA 재실행 뒤 실제 팝오버도 부모 검증자가 확인했다. 18:05 기존 Applications 정상 설치본을 파일 변경 없이 재실행한 뒤에도 Orca에는 자기 연결만, 정상·QA 앱에는 각각 자기 연결과 허용=true가 유지됐다. 새 정상 프로세스의 host tracking·displayable 생성·메뉴 추가 로그까지 확인하여 현재 세션의 메뉴 소유 연결 결함은 수정·재실행 검증을 마쳤다. 정상 계정의 개인 일정 팝오버 화면과 재로그인·재부팅 후 지속성은 확인하지 않았다. 전역 초기화·ControlCenter 재시작·로그인/알림 설정 변경은 수행하지 않았다.
 - 재로그인: 실제 로그인 항목 등록과 enabled 상태를 확인했다. 실제 로그아웃 후 자동 실행까지 확인하려면 사용자 세션 종료가 필요하므로 수행하지 않았다.
 
 
