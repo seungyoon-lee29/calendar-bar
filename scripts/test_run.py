@@ -56,6 +56,51 @@ class GroupProbeTests(unittest.TestCase):
                 runner.signal_group(12345, signal.SIGTERM)
 
 
+class QAPreflightTests(unittest.TestCase):
+    def test_inventory_contract(self):
+        from qa_preflight import validate
+        app = pathlib.Path('/tmp/qa-preflight/QA.app')
+        self.assertTrue(validate(app, {'candidates': [str(app)], 'running': []}))
+        self.assertFalse(validate(app, {'candidates': [], 'running': []}, allow_unregistered=True))
+        for state in (
+            {'candidates': [], 'running': []},
+            {'candidates': [str(app), '/tmp/other/QA.app'], 'running': []},
+            {'candidates': [str(app)], 'running': [{'pid': 1, 'path': str(app)}]},
+            {'candidates': [str(app)], 'running': [{'pid': 2, 'path': '/tmp/other/QA.app'}]},
+        ):
+            with self.assertRaises(RuntimeError):
+                validate(app, state)
+
+    def test_first_registration_must_be_rechecked(self):
+        from qa_preflight import preflight
+        app = pathlib.Path('/tmp/qa-preflight/QA.app')
+        empty = {'candidates': [], 'running': []}
+        with patch('qa_preflight.inventory'):
+            from unittest.mock import Mock
+            register = Mock()
+            query = Mock(side_effect=[empty, {'candidates': [str(app)], 'running': []}])
+            preflight(app, 'test.qa', query=query, register=register)
+            register.assert_called_once_with(app)
+            self.assertEqual(query.call_count, 2)
+            with self.assertRaises(RuntimeError):
+                preflight(app, 'test.qa', query=Mock(side_effect=[empty, empty]), register=register)
+
+    def test_launcher_checks_bundle_identity_before_open_without_new_instance(self):
+        import runpy
+        info = {'CFBundleIdentifier': 'local.ian.CalendarBar.qa', 'CFBundleExecutable': 'CalendarBar'}
+        with tempfile.TemporaryDirectory() as directory:
+            import plistlib
+            app = pathlib.Path(directory) / 'QA.app'
+            (app / 'Contents').mkdir(parents=True)
+            (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+            with patch.object(sys, 'argv', ['run_qa.py', '1', str(app)]), patch('qa_preflight.preflight', side_effect=RuntimeError('duplicate')) as check, patch('subprocess.Popen') as launch, patch('subprocess.check_output', return_value=''):
+                with self.assertRaisesRegex(RuntimeError, 'duplicate'):
+                    runpy.run_path(str(RUNNER.with_name('run_qa.py')))
+                check.assert_called_once_with(app.resolve(), info['CFBundleIdentifier'])
+                launch.assert_not_called()
+        self.assertNotIn("'-n'", RUNNER.with_name('run_qa.py').read_text())
+
+
 class RunnerTests(unittest.TestCase):
     def check_cleanup(self, mode, expected):
         with tempfile.TemporaryDirectory() as directory:
