@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Regression tests using isolated process groups; no app or account access."""
 import os
+import importlib.util
+from unittest.mock import patch
 import pathlib
 import signal
 import subprocess
@@ -31,6 +33,27 @@ sys.exit(int(sys.argv[4]))
 def alive(pid):
     result = subprocess.run(["ps", "-p", str(pid), "-o", "stat="], capture_output=True, text=True, timeout=5)
     return bool(result.stdout.strip()) and not result.stdout.strip().startswith("Z")
+
+
+class GroupProbeTests(unittest.TestCase):
+    def load_runner(self):
+        spec = importlib.util.spec_from_file_location("bounded_runner", RUNNER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_permission_error_is_absent_only_with_empty_process_inventory(self):
+        runner = self.load_runner()
+        inventory = subprocess.CompletedProcess([], 0, "  10 10 S\n", "")
+        with patch.object(runner.os, "killpg", side_effect=PermissionError(1, "denied")), patch.object(runner.subprocess, "run", return_value=inventory):
+            self.assertFalse(runner.signal_group(12345, 0))
+
+    def test_permission_error_for_existing_group_is_reported(self):
+        runner = self.load_runner()
+        inventory = subprocess.CompletedProcess([], 0, "12346 12345 S\n", "")
+        with patch.object(runner.os, "killpg", side_effect=PermissionError(1, "denied")), patch.object(runner.subprocess, "run", return_value=inventory):
+            with self.assertRaises(PermissionError):
+                runner.signal_group(12345, signal.SIGTERM)
 
 
 class RunnerTests(unittest.TestCase):

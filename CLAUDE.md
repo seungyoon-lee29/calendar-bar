@@ -23,11 +23,13 @@
 │       ├── findings.md               → 해결하지 못한 문제
 │       └── decisions/
 │           ├── index.md              → 결정 목록
-│           └── 0001-system-calendar.md → 시스템 캘린더 읽기 선택 이유
+│           ├── 0001-system-calendar.md → 시스템 캘린더 읽기 선택 이유
+│           └── 0002-local-reminders.md → 종료 중 알림과 갱신의 절충
 └── Sources/
     ├── CalendarBar/AGENTS.md          → 앱 진입과 수명 연결
     ├── CalendarCore/AGENTS.md         → 날짜와 일정 계산
     ├── CalendarAccess/AGENTS.md        → 시스템 일정 조회
+    ├── CalendarNotifications/AGENTS.md → 앱 알림 예약과 복구
     ├── MenuBar/AGENTS.md               → 팝오버·로그인 항목
     └── CalendarUI/AGENTS.md            → 화면과 제스처
 ```
