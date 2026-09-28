@@ -39,7 +39,7 @@ public struct EventOccurrence: Identifiable, Equatable, Sendable {
         self.calendarName = calendarName
         self.color = color
         self.eventID = eventID
-        self.title = title.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 } ?? "제목 없음"
+        self.title = title.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 } ?? "(제목 없음)"
         self.start = start
         self.end = end
         self.isAllDay = isAllDay

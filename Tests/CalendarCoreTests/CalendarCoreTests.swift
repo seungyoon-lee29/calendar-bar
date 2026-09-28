@@ -76,7 +76,7 @@ final class CalendarCoreTests: XCTestCase {
         let recurrence = event("a", start: "2024-03-03T10:00:00Z", end: "2024-03-03T11:00:00Z")
         XCTAssertNotEqual(a.id, recurrence.id)
         XCTAssertNotEqual(a.id, event("a", start: "2024-03-02T10:00:00Z", end: "2024-03-02T11:00:00Z", calendar: "two").id)
-        XCTAssertEqual(c.title, "제목 없음")
+        XCTAssertEqual(c.title, "(제목 없음)")
         XCTAssertEqual(EventIndex.events(on: a.start, in: [a, b, c, earlier], context: utc).map(\.eventID), ["c", "early", "b", "a"])
         XCTAssertEqual(EventIndex.colors(on: a.start, in: [a, b, c], context: utc).count, 2)
         let tied = event("z", start: "2024-03-02T10:00:00Z", end: "2024-03-02T11:00:00Z", title: "B")
