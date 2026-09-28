@@ -8,7 +8,11 @@ final class LoginItemControllerTests: XCTestCase {
         var registrations = 0
         var unregistrations = 0
         var error: Error?
-        func currentState() throws -> LoginItemState { state }
+        var queryError: Error?
+        func currentState() throws -> LoginItemState {
+            if let queryError { throw queryError }
+            return state
+        }
         func register() throws {
             registrations += 1
             if let error { throw error }
@@ -36,6 +40,29 @@ final class LoginItemControllerTests: XCTestCase {
         later.initializeForLaunch()
         XCTAssertEqual(later.state, .disabled)
         XCTAssertEqual(backend.registrations, 1)
+    }
+
+    func testFirstLaunchRegistersWhenSystemReportsNotFound() async {
+        let backend = Backend(), store = Store()
+        backend.state = .failure("로그인 항목을 찾을 수 없습니다.")
+        let controller = LoginItemController(backend: backend, store: store)
+        controller.initializeForLaunch()
+        XCTAssertEqual(backend.registrations, 1)
+        XCTAssertEqual(controller.state, .enabled)
+        XCTAssertTrue(store.hasInitializedLoginItem)
+
+        backend.state = .disabled
+        LoginItemController(backend: backend, store: store).initializeForLaunch()
+        XCTAssertEqual(backend.registrations, 1)
+    }
+
+    func testStatusQueryThrowPreservesFailureWithoutRegistering() async {
+        let backend = Backend(), store = Store()
+        backend.queryError = Failure.denied
+        let controller = LoginItemController(backend: backend, store: store)
+        controller.initializeForLaunch()
+        XCTAssertEqual(backend.registrations, 0)
+        XCTAssertEqual(controller.state, .failure(Failure.denied.localizedDescription))
     }
 
     func testPreviewDoesNotConsumeFirstRealLaunch() async {
