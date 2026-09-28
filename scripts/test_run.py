@@ -24,6 +24,7 @@ pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))
 subprocess.Popen([sys.executable, '-c', sys.argv[3], sys.argv[2]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 while not pathlib.Path(sys.argv[2]).exists():
     time.sleep(0.01)
+print('FIXTURE_READY', flush=True)
 if sys.argv[4] == 'timeout':
     time.sleep(60)
 print('parent output', flush=True)
@@ -108,10 +109,14 @@ class RunnerTests(unittest.TestCase):
             child_path = pathlib.Path(directory) / "child"
             try:
                 result = subprocess.run(
-                    [sys.executable, str(RUNNER), "1" if mode == "timeout" else "10",
+                    [sys.executable, str(RUNNER), "5" if mode == "timeout" else "10",
                      sys.executable, "-c", PARENT, str(parent_path), str(child_path), CHILD, mode],
-                    capture_output=True, text=True, timeout=15)
+                    capture_output=True, text=True, timeout=25)
                 self.assertEqual(result.returncode, expected, result.stderr)
+                # Under concurrent builds one second can expire before Python's
+                # child startup. Never count that as descendant-cleanup coverage.
+                self.assertIn("FIXTURE_READY", result.stdout, "fixture did not become ready before runner deadline")
+                self.assertTrue(child_path.is_file(), "fixture child PID was not recorded")
                 child = int(child_path.read_text())
                 deadline = time.monotonic() + 2
                 while alive(child) and time.monotonic() < deadline:
