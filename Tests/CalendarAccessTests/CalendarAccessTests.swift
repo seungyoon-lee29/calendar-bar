@@ -354,3 +354,66 @@ import CalendarCore
         return results
     }
 }
+
+final class OccurrenceFormatIdentityTests: XCTestCase {
+    let context = CalendarContext(timeZone: TimeZone(secondsFromGMT: 0)!)
+    let date = Date(timeIntervalSince1970: 2_000_000_000)
+    func occurrence(_ original: Date, allDay: Bool, item: String = "item", calendar: String = "cal") -> EventOccurrence {
+        let anchors = EventKitBackend.occurrenceAnchors(originalDate: original, isAllDay: allDay, context: context)
+        return EventOccurrence(calendarID: calendar, calendarName: "", color: .init(red: 0, green: 0, blue: 0), eventID: item,
+            title: "", start: original.addingTimeInterval(86400), end: original.addingTimeInterval(90000), isAllDay: allDay,
+            localItemID: item, externalID: "shared-external", isRecurring: true, originalOccurrence: anchors.first,
+            confirmedSeriesKey: item, originalOccurrenceAlternatives: Array(anchors.dropFirst()))
+    }
+    func testBothConversionsRetainOverridesAndForwardBoundaries() throws {
+        for allDay in [true, false] {
+            let event = occurrence(date, allDay: allDay)
+            let old = occurrence(date, allDay: !allDay)
+            let format: ReminderFormat = allDay ? .timed : .allDay
+            let triggers = allDay ? ReminderDefaults().timed : ReminderDefaults().allDay
+            let rule = try ReminderRule(identity: old.reminderIdentity, anchor: old.originalOccurrence!, scope: .thisOccurrence, format: format, enabled: true, triggers: triggers)
+            var rules = ReminderRules(rules: [rule])
+            XCTAssertEqual(rules.resolve(event: event, context: context)?.id, rule.id)
+            XCTAssertEqual(ReminderCalculator.calculate(rule: rule, event: event, now: .distantPast, context: context), .needsFormatConfirmation)
+            XCTAssertEqual(CalendarResolution.match([event], identity: rule.identity, anchor: rule.anchor, isRecurring: true, absence: .missing), .found(event))
+            let off = try ReminderRule(identity: old.reminderIdentity, anchor: rule.anchor, scope: .thisOccurrence, format: format, enabled: false, triggers: [])
+            try rules.replace(with: off)
+            let parent = try ReminderRule(identity: old.reminderIdentity, anchor: rule.anchor, scope: .thisAndFuture, format: format, enabled: true, triggers: triggers)
+            try rules.replace(with: parent)
+            XCTAssertEqual(rules.resolve(event: event, context: context)?.id, off.id)
+            rules.removeOverride(event: event, context: context)
+            XCTAssertEqual(rules.resolve(event: event, context: context)?.id, parent.id)
+            XCTAssertNil(rules.resolve(event: occurrence(date.addingTimeInterval(-86400), allDay: allDay), context: context))
+            XCTAssertEqual(rules.resolve(event: occurrence(date.addingTimeInterval(86400), allDay: allDay), context: context)?.id, parent.id)
+            XCTAssertNil(rules.resolve(event: occurrence(date, allDay: allDay, item: "other"), context: context))
+            XCTAssertNil(rules.resolve(event: occurrence(date, allDay: allDay, calendar: "other"), context: context))
+            // Encoding stays v1-compatible: only rules, not transient evidence, persist.
+            XCTAssertEqual(try JSONDecoder().decode(ReminderRule.self, from: JSONEncoder().encode(rule)), rule)
+        }
+    }
+    func testCivilCollisionDoesNotBlockExactTimedEvidenceOrAnotherDay() throws {
+        let a = occurrence(date, allDay: false), b = occurrence(date.addingTimeInterval(60), allDay: false)
+        let marked = EventOccurrence.markingAmbiguousOriginalDates([a,b])
+        let civil = OccurrenceAnchor.civil(CivilDate(date: date, context: context))
+        let rule = try ReminderRule(identity: a.reminderIdentity, anchor: civil, scope: .thisOccurrence, format: .allDay, enabled: false, triggers: [])
+        let rules = ReminderRules(rules: [rule])
+        for event in marked {
+            XCTAssertNil(rules.resolve(event: event, context: context))
+            XCTAssertTrue(rules.needsIdentityConfirmation(event: event))
+        }
+        XCTAssertEqual(CalendarResolution.match(marked, identity: a.reminderIdentity, anchor: civil, isRecurring: true, absence: .missing), .needsConfirmation)
+        XCTAssertEqual(CalendarResolution.match([marked[0]], identity: a.reminderIdentity, anchor: civil, isRecurring: true, absence: .missing), .needsConfirmation)
+        XCTAssertEqual(CalendarResolution.match(marked, identity: a.reminderIdentity, anchor: .timed(date), isRecurring: true, absence: .missing), .found(marked[0]))
+        let safe = occurrence(date.addingTimeInterval(86400), allDay: false)
+        XCTAssertFalse(rules.needsIdentityConfirmation(event: safe))
+    }
+    func testAdapterRetainsBothOriginalAnchorKindsAcrossFormatChanges() {
+        let context = CalendarContext(timeZone: TimeZone(secondsFromGMT: 0)!)
+        let original = Date(timeIntervalSince1970: 2_000_000_000)
+        for allDay in [false, true] {
+            let anchors = EventKitBackend.occurrenceAnchors(originalDate: original, isAllDay: allDay, context: context)
+            XCTAssertTrue(anchors.contains(.timed(original)))
+            XCTAssertTrue(anchors.contains(.civil(CivilDate(date: original, context: context))))
+        }
+    }
+}

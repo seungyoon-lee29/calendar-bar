@@ -28,16 +28,20 @@ struct ReminderTriggerDraft: Identifiable {
 struct ReminderDraft {
     let event: EventOccurrence
     let existing: ReminderRule?
-    let occurrenceAnchor: OccurrenceAnchor?
+    private let individualAnchor: OccurrenceAnchor?
+    private let futureAnchor: OccurrenceAnchor?
+    var occurrenceAnchor: OccurrenceAnchor? { scope == .thisAndFuture ? futureAnchor : individualAnchor }
     let format: ReminderFormat
     var scope: ReminderScope = .thisOccurrence
     var rows: [ReminderTriggerDraft]
     var formatConfirmed = false
     var requiresFormatConfirmation: Bool { existing.map { $0.format != format } ?? false }
-    var canUseFuture: Bool { event.isRecurring && event.confirmedSeriesKey != nil && occurrenceAnchor != nil }
-    init(event: EventOccurrence, existing: ReminderRule?, defaults: ReminderDefaults, context: CalendarContext) {
+    var canUseFuture: Bool { event.isRecurring && event.confirmedSeriesKey != nil && futureAnchor != nil }
+    init(event: EventOccurrence, existing: ReminderRule?, defaults: ReminderDefaults, context: CalendarContext, needsIdentityConfirmation: Bool = false, rules: ReminderRules? = nil) {
         self.event = event; self.existing = existing
-        occurrenceAnchor = event.reminderAnchor(context: context)
+        individualAnchor = needsIdentityConfirmation ? nil : (existing.flatMap { event.isRecurring ? event.originalAnchor(matching: $0.anchor) : $0.anchor } ?? event.reminderAnchor(context: context))
+        let savedRules = rules ?? ReminderRules(rules: existing.map { [$0] } ?? [])
+        futureAnchor = needsIdentityConfirmation ? nil : savedRules.futureEditingAnchor(event: event, context: context)
         let targetFormat: ReminderFormat = event.isAllDay ? .allDay : .timed
         format = targetFormat
         // Editing starts at this occurrence. A future change must be an explicit choice.
