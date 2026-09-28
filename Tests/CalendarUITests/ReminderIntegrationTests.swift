@@ -50,11 +50,13 @@ final class ReminderIntegrationTests: XCTestCase {
     }
 
     @MainActor func testLifecycleReopenAfterNotificationPreservesDestinationAndSafeFailure() async throws {
-        let backend = MutableReminderCalendar(now: Date().addingTimeInterval(3 * 86400))
+        let futureSeed = Date().addingTimeInterval(3 * 86400)
+        let backend = MutableReminderCalendar(now: futureSeed)
         let access = CalendarAccessController(backend: backend, storage: QASelection(), observeChanges: false)
         let reminders = ReminderCoordinator(access: access, storage: VolatileReminderStorage(), backend: QANotifications(), observeChanges: false)
         let model = CalendarModel(access: access, reminders: reminders)
-        model.refresh(); await model.waitForRefresh()
+        // Query the fixture event's month even when seed + 2 hours crosses a month boundary.
+        model.select(futureSeed.addingTimeInterval(7200)); await model.waitForRefresh()
         let event = try XCTUnwrap(access.events.first { $0.eventID == "qa-timed" })
         model.editReminder(event); await model.saveReminder(enabled: true); await reminders.requestPermission()
         let token = try XCTUnwrap(reminders.settings.links.keys.first)
