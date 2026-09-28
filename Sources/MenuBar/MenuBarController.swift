@@ -5,6 +5,8 @@ import AppKit
 @MainActor
 public final class MenuBarController: NSObject, NSPopoverDelegate {
     public let popover: NSPopover
+    public var onUserOpen: (() -> Void)?
+    private let presentation = PopoverPresentation()
     private let statusItem: NSStatusItem
     private let onOpen: () -> Void
     private let onDateChange: (Date) -> Void
@@ -72,21 +74,34 @@ public final class MenuBarController: NSObject, NSPopoverDelegate {
 
     @objc public func togglePopover() {
         if popover.isShown { close(); return }
+        onUserOpen?()
+        show(resetToToday: true)
+    }
+
+    /// Notification navigation has already selected its destination.
+    public func show(resetToToday: Bool = true) {
+        presentation.request(activate: { NSApp.activate() }) { [weak self] in
+            self?.attemptPresentation(resetToToday: resetToToday) ?? true
+        }
+    }
+
+    private func attemptPresentation(resetToToday: Bool) -> Bool {
+        if popover.isShown { return true }
         statusItem.isVisible = true
         guard let button = statusItem.button, let window = button.window, window.isVisible,
-              !button.isHiddenOrHasHiddenAncestor else { return }
+              !button.isHiddenOrHasHiddenAncestor else { return false }
         let buttonFrame = window.convertToScreen(button.convert(button.bounds, to: nil))
         // A detached status item can have a visible window at (0, -22) with no screen.
         // Present only below the real menu bar icon, never from that placeholder.
-        guard Self.hasVisibleAnchor(buttonFrame, on: window.screen?.frame) else { return }
+        guard Self.hasVisibleAnchor(buttonFrame, on: window.screen?.frame) else { return false }
         refreshDate()
-        onOpen()
-        NSApp.activate(ignoringOtherApps: true)
+        if resetToToday { onOpen() }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
+        return popover.isShown
     }
 
-    public func close() { popover.performClose(nil) }
+    public func close() { presentation.cancel(); popover.performClose(nil) }
 
     public func popoverDidShow(_ notification: Notification) {
         removeClickMonitors()
@@ -115,7 +130,7 @@ public final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     @objc private func applicationDeactivated(_ notification: Notification) {
-        if popover.isShown { close() }
+        close()
     }
 
     public func setContentSize(_ size: NSSize) { popover.contentSize = size }

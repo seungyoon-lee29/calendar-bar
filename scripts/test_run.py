@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Regression tests using isolated process groups; no app or account access."""
 import os
+import importlib.util
+from unittest.mock import patch
 import pathlib
 import signal
 import subprocess
@@ -22,6 +24,7 @@ pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))
 subprocess.Popen([sys.executable, '-c', sys.argv[3], sys.argv[2]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 while not pathlib.Path(sys.argv[2]).exists():
     time.sleep(0.01)
+print('FIXTURE_READY', flush=True)
 if sys.argv[4] == 'timeout':
     time.sleep(60)
 print('parent output', flush=True)
@@ -33,6 +36,90 @@ def alive(pid):
     return bool(result.stdout.strip()) and not result.stdout.strip().startswith("Z")
 
 
+class GroupProbeTests(unittest.TestCase):
+    def load_runner(self):
+        spec = importlib.util.spec_from_file_location("bounded_runner", RUNNER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_permission_error_is_absent_only_with_empty_process_inventory(self):
+        runner = self.load_runner()
+        inventory = subprocess.CompletedProcess([], 0, "  10 10 S\n", "")
+        with patch.object(runner.os, "killpg", side_effect=PermissionError(1, "denied")), patch.object(runner.subprocess, "run", return_value=inventory):
+            self.assertFalse(runner.signal_group(12345, 0))
+
+    def test_permission_error_for_existing_group_is_reported(self):
+        runner = self.load_runner()
+        inventory = subprocess.CompletedProcess([], 0, "12346 12345 S\n", "")
+        with patch.object(runner.os, "killpg", side_effect=PermissionError(1, "denied")), patch.object(runner.subprocess, "run", return_value=inventory):
+            with self.assertRaises(PermissionError):
+                runner.signal_group(12345, signal.SIGTERM)
+
+
+class QAPreflightTests(unittest.TestCase):
+    def test_launcher_passes_only_standard_environment(self):
+        import plistlib
+        import runpy
+        info = {'CFBundleIdentifier': 'local.ian.CalendarBar.qa', 'CFBundleExecutable': 'CalendarBar'}
+        standard = {'PATH': '/usr/bin:/bin', 'HOME': '/tmp/fake-home', 'USER': 'fake-user', 'LOGNAME': 'fake-user', 'TMPDIR': '/tmp/fake-temp', 'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'UTF-8'}
+        inherited = dict(standard, SECRET_VARIABLE='fake-sentinel', API_KEY='fake-key', DYLD_INSERT_LIBRARIES='fake-injection')
+        with tempfile.TemporaryDirectory() as directory:
+            app = pathlib.Path(directory) / 'QA.app'
+            (app / 'Contents').mkdir(parents=True)
+            (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+            with patch.object(sys, 'argv', ['run_qa.py', '1', str(app)]), patch.dict(os.environ, inherited, clear=True), patch('qa_preflight.preflight'), patch('subprocess.Popen') as launch, patch('subprocess.check_output', return_value=''):
+                launch.return_value.wait.return_value = 0
+                with self.assertRaises(SystemExit) as result:
+                    runpy.run_path(str(RUNNER.with_name('run_qa.py')))
+                self.assertEqual(result.exception.code, 0)
+                self.assertEqual(launch.call_args.kwargs.get('env'), standard)
+                self.assertNotIn('SECRET_VARIABLE', launch.call_args.kwargs.get('env', {}))
+
+    def test_inventory_contract(self):
+        from qa_preflight import validate
+        app = pathlib.Path('/tmp/qa-preflight/QA.app')
+        self.assertTrue(validate(app, {'candidates': [str(app)], 'running': []}))
+        self.assertFalse(validate(app, {'candidates': [], 'running': []}, allow_unregistered=True))
+        for state in (
+            {'candidates': [], 'running': []},
+            {'candidates': [str(app), '/tmp/other/QA.app'], 'running': []},
+            {'candidates': [str(app)], 'running': [{'pid': 1, 'path': str(app)}]},
+            {'candidates': [str(app)], 'running': [{'pid': 2, 'path': '/tmp/other/QA.app'}]},
+        ):
+            with self.assertRaises(RuntimeError):
+                validate(app, state)
+
+    def test_first_registration_must_be_rechecked(self):
+        from qa_preflight import preflight
+        app = pathlib.Path('/tmp/qa-preflight/QA.app')
+        empty = {'candidates': [], 'running': []}
+        with patch('qa_preflight.inventory'):
+            from unittest.mock import Mock
+            register = Mock()
+            query = Mock(side_effect=[empty, {'candidates': [str(app)], 'running': []}])
+            preflight(app, 'test.qa', query=query, register=register)
+            register.assert_called_once_with(app)
+            self.assertEqual(query.call_count, 2)
+            with self.assertRaises(RuntimeError):
+                preflight(app, 'test.qa', query=Mock(side_effect=[empty, empty]), register=register)
+
+    def test_launcher_checks_bundle_identity_before_open_without_new_instance(self):
+        import runpy
+        info = {'CFBundleIdentifier': 'local.ian.CalendarBar.qa', 'CFBundleExecutable': 'CalendarBar'}
+        with tempfile.TemporaryDirectory() as directory:
+            import plistlib
+            app = pathlib.Path(directory) / 'QA.app'
+            (app / 'Contents').mkdir(parents=True)
+            (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+            with patch.object(sys, 'argv', ['run_qa.py', '1', str(app)]), patch('qa_preflight.preflight', side_effect=RuntimeError('duplicate')) as check, patch('subprocess.Popen') as launch, patch('subprocess.check_output', return_value=''):
+                with self.assertRaisesRegex(RuntimeError, 'duplicate'):
+                    runpy.run_path(str(RUNNER.with_name('run_qa.py')))
+                check.assert_called_once_with(app.resolve(), info['CFBundleIdentifier'])
+                launch.assert_not_called()
+        self.assertNotIn("'-n'", RUNNER.with_name('run_qa.py').read_text())
+
+
 class RunnerTests(unittest.TestCase):
     def check_cleanup(self, mode, expected):
         with tempfile.TemporaryDirectory() as directory:
@@ -40,10 +127,14 @@ class RunnerTests(unittest.TestCase):
             child_path = pathlib.Path(directory) / "child"
             try:
                 result = subprocess.run(
-                    [sys.executable, str(RUNNER), "1" if mode == "timeout" else "10",
+                    [sys.executable, str(RUNNER), "5" if mode == "timeout" else "10",
                      sys.executable, "-c", PARENT, str(parent_path), str(child_path), CHILD, mode],
-                    capture_output=True, text=True, timeout=15)
+                    capture_output=True, text=True, timeout=25)
                 self.assertEqual(result.returncode, expected, result.stderr)
+                # Under concurrent builds one second can expire before Python's
+                # child startup. Never count that as descendant-cleanup coverage.
+                self.assertIn("FIXTURE_READY", result.stdout, "fixture did not become ready before runner deadline")
+                self.assertTrue(child_path.is_file(), "fixture child PID was not recorded")
                 child = int(child_path.read_text())
                 deadline = time.monotonic() + 2
                 while alive(child) and time.monotonic() < deadline:
