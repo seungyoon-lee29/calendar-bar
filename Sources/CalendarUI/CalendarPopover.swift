@@ -243,7 +243,8 @@ import ServiceManagement
                         if model.agendaGroups.isEmpty { Text("예정 일정 없음").foregroundStyle(.secondary) }
                         ForEach(model.agendaGroups) { group in
                             Text(model.formatted(group.day, "M월 d일 EEEE")).font(.system(size: 13, weight: .semibold)).accessibilityAddTraits(.isHeader)
-                            ForEach(group.events) { event in
+                            ForEach(group.events.map { AgendaDisplayRow(day: group.day, event: $0) }) { row in
+                                let event = row.event
                                 EventDisplayRow(event: event, time: agendaTime(event, day: group.day), highlighted: false,
                                     action: { Task { await model.activate(event, interval: model.agendaInterval) } },
                                     reminder: { model.editReminder(event) }, delivery: model.reminders?.snapshot(for: event))
@@ -322,6 +323,18 @@ import ServiceManagement
 }
 extension Color {
     init(_ color: RGBAColor) { self.init(.sRGB, red: color.red, green: color.green, blue: color.blue, opacity: color.alpha) }
+}
+
+/// Lazy stacks flatten nested ForEach children; an occurrence shown on multiple
+/// days needs a presentation identity distinct from its underlying event identity.
+struct AgendaDisplayRow: Identifiable {
+    struct ID: Hashable {
+        let day: Date
+        let event: EventOccurrence.ID
+    }
+    let day: Date
+    let event: EventOccurrence
+    var id: ID { ID(day: day, event: event.id) }
 }
 
 @MainActor private struct EventDisplayRow: View {
