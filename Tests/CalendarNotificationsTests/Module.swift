@@ -412,3 +412,47 @@ private actor NotificationFake: ReminderNotificationBackend {
         }
     }
 }
+
+@MainActor extension ReminderCoordinatorTests {
+    func testRemovedTriggersCancelAcrossBothQueryFailurePaths() async throws {
+        for fullQueryFailure in [true, false] {
+            let calendar = CalendarFake(); let backend = NotificationFake(); let a = event()
+            let b = EventOccurrence(calendarID: "cal", calendarName: "", color: a.color, eventID: "unrelated", title: "", start: a.start, end: a.end, isAllDay: false)
+            calendar.items = [a,b]
+            let model = coordinator(calendar, backend)
+            let original = try rule(a)
+            try await model.save(rule: original, event: a); try await model.save(rule: rule(b), event: b)
+            let old = await backend.pending()
+            let unrelatedIDs = Set(old.filter { model.clickLink(token: $0.token)?.identity.localItemID == "unrelated" }.map(\.id))
+            calendar.fail = fullQueryFailure; calendar.items = [b]; calendar.resolution = .failed
+            let replacement = try ReminderRule(id: original.id, identity: a.reminderIdentity, anchor: .timed(a.start), scope: .thisOccurrence, format: .timed, enabled: true, triggers: [try .timed(hours: 0, minutes: 5)])
+            try await model.save(rule: replacement, event: a)
+            let remaining = await backend.pending()
+            XCTAssertEqual(Set(remaining.map(\.id)), unrelatedIDs)
+            XCTAssertEqual(model.snapshots[replacement.id]?.state, .failed)
+        }
+    }
+    func testDeliveredUncertaintyPublishesWithoutBlockingFutureOccurrence() async throws {
+        for mode in 0..<3 {
+            let calendar = CalendarFake(); let backend = NotificationFake()
+            func occurrence(_ offset: TimeInterval, allDay: Bool = false) -> EventOccurrence {
+                let start = now.addingTimeInterval(offset)
+                return EventOccurrence(calendarID: "cal", calendarName: "", color: RGBAColor(red: 0, green: 0, blue: 0), eventID: "series", title: "", start: start, end: start.addingTimeInterval(60), isAllDay: allDay, isRecurring: true, originalOccurrence: .timed(start), confirmedSeriesKey: "master")
+            }
+            let a = occurrence(7200), b = occurrence(14400); calendar.items = [a,b]
+            let model = coordinator(calendar, backend)
+            let series = try ReminderRule(identity: a.reminderIdentity, anchor: .timed(a.start), scope: .thisAndFuture, format: .timed, enabled: true, triggers: ReminderDefaults().timed)
+            try await model.save(rule: series, event: a)
+            let pending = await backend.pending()
+            let aIDs = pending.filter { model.clickLink(token: $0.token)?.anchor == .timed(a.start) }.map(\.id)
+            await backend.deliver(aIDs); calendar.items = [b]
+            calendar.resolution = mode == 0 ? .needsConfirmation : mode == 1 ? .outsideQuery : .found(occurrence(7200, allDay: true))
+            await model.refresh()
+            let delivered = await backend.deliveredIdentifiers(); XCTAssertTrue(delivered.isEmpty)
+            XCTAssertEqual(model.needsConfirmation, 1)
+            XCTAssertEqual(model.snapshot(for: a).state, .needsConfirmation)
+            XCTAssertEqual(model.snapshot(for: b).state, .scheduled)
+            XCTAssertEqual(model.scheduled, 2)
+        }
+    }
+}

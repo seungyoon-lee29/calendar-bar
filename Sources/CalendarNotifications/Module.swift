@@ -271,17 +271,18 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
             return
         }
         let allowedCalendars = query.state == .loaded ? access.effectiveSelectedCalendarIDs : access.selectedCalendarIDs
-        func allowed(_ link: ReminderLink?) -> Bool {
-            guard let link else { return false }
-            return allowedCalendars.contains(link.identity.calendarID) && effectiveRule(link, in: saved)?.enabled == true
+        func allowed(_ link: ReminderLink?, requestID: String) -> Bool {
+            guard let link, let rule = effectiveRule(link, in: saved), rule.enabled,
+                  allowedCalendars.contains(link.identity.calendarID) else { return false }
+            return rule.triggers.contains { ReminderRequest.identifier(identity: link.identity, anchor: link.anchor, trigger: $0) == requestID }
         }
         let didPurge = purgeDelivered
-        let rejectedPending = pending.filter { !allowed(saved.links[$0.token]) }
-        let rejectedDelivered = delivered.filter { didPurge || !allowed(saved.links[String($0.dropFirst(ReminderRequest.prefix.count))]) }
+        let rejectedPending = pending.filter { !allowed(saved.links[$0.token], requestID: $0.id) }
+        let rejectedDelivered = delivered.filter { didPurge || !allowed(saved.links[String($0.dropFirst(ReminderRequest.prefix.count))], requestID: $0) }
         await backend.remove(rejectedPending.map(\.id) + rejectedDelivered + (didPurge ? pending.map(\.id) : []))
         guard generation == revision else { return }
         purgeDelivered = false
-        let retained = pending.filter { allowed(saved.links[$0.token]) && $0.fireDate > currentTime }
+        let retained = pending.filter { allowed(saved.links[$0.token], requestID: $0.id) && $0.fireDate > currentTime }
         if query.state == .failed || query.state == .loading {
             // A hide change transforms known requests in place even when fresh
             // calendar data is unavailable; their saved times remain trustworthy.
@@ -298,7 +299,7 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
                 snapshots[rule.id]?.state = rule.enabled ? .failed : .noFuture
                 snapshots[rule.id]?.scheduled = evidence.filter { request in
                     guard let link = saved.links[request.token] else { return false }
-                    return effectiveRule(link, in: saved)?.id == rule.id && allowed(link)
+                    return effectiveRule(link, in: saved)?.id == rule.id && allowed(link, requestID: request.id)
                 }.count
             }
             return
@@ -362,13 +363,6 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
             guard let link = saved.links[request.token], let rule = effectiveRule(link, in: saved), failed.contains(rule.id) else { continue }
             desired[request.id] = sanitized(request, hidden: saved.hideContent)
         }
-        desired = desired.filter { entry in
-            guard let link = links[entry.value.token] else { return false }
-            return !unsafeKeys.contains(OccurrenceKey(link)) && !invalidKeys.contains(OccurrenceKey(link))
-        }
-        let ordered = desired.values.sorted { $0.fireDate == $1.fireDate ? $0.id < $1.id : $0.fireDate < $1.fireDate }
-        let selected = Array(ordered.prefix(budget))
-        let selectedIDs = Set(selected.map(\.id))
 
         // Delivered occurrences may be outside the future query, and an enabled
         // parent rule says nothing about an occurrence override or deletion.
@@ -376,7 +370,7 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
         var resolvedDelivered: [OccurrenceKey: CalendarEventResolution] = [:]
         for id in delivered where !rejectedDelivered.contains(id) {
             let token = String(id.dropFirst(ReminderRequest.prefix.count))
-            guard let link = saved.links[token], let rule = effectiveRule(link, in: saved), allowed(link) else { obsoleteDelivered.append(id); continue }
+            guard let link = saved.links[token], let rule = effectiveRule(link, in: saved), allowed(link, requestID: id) else { obsoleteDelivered.append(id); continue }
             let key = OccurrenceKey(link)
             if unsafeKeys.contains(key) || invalidKeys.contains(key) { obsoleteDelivered.append(id); continue }
             let result: CalendarEventResolution
@@ -388,11 +382,24 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
             }
             switch result {
             case .found(let event):
-                if (rule.format == .allDay) != event.isAllDay { obsoleteDelivered.append(id) }
-            case .missing, .needsConfirmation, .outsideSelectedScope, .connectionRequired, .outsideQuery: obsoleteDelivered.append(id)
+                if (rule.format == .allDay) != event.isAllDay {
+                    obsoleteDelivered.append(id); unsafeRules.insert(rule.id); unsafeKeys.insert(key)
+                    eventSnapshots[event.id] = ReminderDeliverySnapshot(desiredEnabled: true, state: .needsConfirmation)
+                }
+            case .needsConfirmation, .outsideQuery:
+                obsoleteDelivered.append(id); unsafeRules.insert(rule.id); unsafeKeys.insert(key)
+            case .missing, .outsideSelectedScope, .connectionRequired: obsoleteDelivered.append(id)
             case .failed: break
             }
         }
+        desired = desired.filter { entry in
+            guard let link = links[entry.value.token] else { return false }
+            return !unsafeKeys.contains(OccurrenceKey(link)) && !invalidKeys.contains(OccurrenceKey(link))
+        }
+        let ordered = desired.values.sorted { $0.fireDate == $1.fireDate ? $0.id < $1.id : $0.fireDate < $1.fireDate }
+        let selected = Array(ordered.prefix(budget))
+        let selectedIDs = Set(selected.map(\.id))
+
         guard generation == revision else { return }
         await backend.remove(pending.map(\.id).filter { !selectedIDs.contains($0) } + obsoleteDelivered)
         guard generation == revision else { return }
@@ -421,6 +428,10 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
             if unsafeEvents.contains(event.id) { eventSnapshots[event.id] = ReminderDeliverySnapshot(desiredEnabled: true, state: .needsConfirmation); continue }
             guard let rule = saved.rules.resolve(event: event, context: context) else { continue }
             let anchor = event.isRecurring ? event.reminderAnchor(context: context) : rule.anchor
+            if let anchor, unsafeKeys.contains(OccurrenceKey(event.reminderIdentity, anchor)) {
+                eventSnapshots[event.id] = ReminderDeliverySnapshot(desiredEnabled: rule.enabled, state: .needsConfirmation)
+                continue
+            }
             let requests = ordered.filter { request in
                 guard let link = links[request.token] else { return false }
                 return link.identity.matchesOccurrenceItem(event.reminderIdentity) && link.anchor == anchor
