@@ -26,6 +26,8 @@ public final class MenuBarController: NSObject, NSPopoverDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         popover = NSPopover()
         super.init()
+        statusItem.autosaveName = "CalendarBar.date"
+        statusItem.isVisible = true
         popover.delegate = self
         popover.behavior = .transient
         popover.contentViewController = contentViewController
@@ -63,9 +65,20 @@ public final class MenuBarController: NSObject, NSPopoverDelegate {
         NSStatusBar.system.removeStatusItem(statusItem)
     }
 
+    nonisolated static func hasVisibleAnchor(_ buttonFrame: NSRect, on screenFrame: NSRect?) -> Bool {
+        guard let screenFrame, !buttonFrame.isEmpty else { return false }
+        return screenFrame.intersects(buttonFrame)
+    }
+
     @objc public func togglePopover() {
         if popover.isShown { close(); return }
-        guard let button = statusItem.button else { return }
+        statusItem.isVisible = true
+        guard let button = statusItem.button, let window = button.window, window.isVisible,
+              !button.isHiddenOrHasHiddenAncestor else { return }
+        let buttonFrame = window.convertToScreen(button.convert(button.bounds, to: nil))
+        // A detached status item can have a visible window at (0, -22) with no screen.
+        // Present only below the real menu bar icon, never from that placeholder.
+        guard Self.hasVisibleAnchor(buttonFrame, on: window.screen?.frame) else { return }
         refreshDate()
         onOpen()
         NSApp.activate(ignoringOtherApps: true)
