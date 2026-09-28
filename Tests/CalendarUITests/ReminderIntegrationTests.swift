@@ -2,6 +2,7 @@ import XCTest
 import CalendarCore
 @testable import CalendarAccess
 import CalendarNotifications
+import MenuBar
 @testable import CalendarUI
 
 final class ReminderIntegrationTests: XCTestCase {
@@ -30,6 +31,41 @@ final class ReminderIntegrationTests: XCTestCase {
         let production = CalendarLaunchOptions(arguments: ["app"], bundleID: "test.calendar", qaConfigurationURL: url)
         XCTAssertFalse(production.qa)
         XCTAssertFalse(production.qaNotifications)
+    }
+
+    @MainActor func testLifecycleReopenAfterNotificationPreservesDestinationAndSafeFailure() async throws {
+        let backend = MutableReminderCalendar()
+        let access = CalendarAccessController(backend: backend, storage: QASelection(), observeChanges: false)
+        let reminders = ReminderCoordinator(access: access, storage: VolatileReminderStorage(), backend: QANotifications(), observeChanges: false)
+        let model = CalendarModel(access: access, reminders: reminders)
+        model.refresh(); await model.waitForRefresh()
+        let event = try XCTUnwrap(access.events.first { $0.eventID == "qa-timed" })
+        model.editReminder(event); await model.saveReminder(enabled: true); await reminders.requestPermission()
+        let token = try XCTUnwrap(reminders.settings.links.keys.first)
+        let fakeLogin = QALogin()
+        let menu = LifecyclePresentation(onOpen: { model.open() })
+        let coordinator = CalendarAppCoordinator(model: model, login: LoginItemController(backend: fakeLogin, store: fakeLogin), reminders: reminders, menu: menu)
+        await backend.delay()
+        let routing = Task { await coordinator.openReminder(token: token) }
+        for _ in 0..<100 where !model.isResolvingReminder { await Task.yield() }
+        XCTAssertTrue(model.isResolvingReminder)
+        menu.shown = false
+        coordinator.reopen()
+        await routing.value
+        XCTAssertEqual(model.highlightedEventID, event.id)
+        // Notification Center may dismiss the first presentation before the app reopen callback.
+        menu.shown = false
+        coordinator.reopen()
+        XCTAssertEqual(model.highlightedEventID, event.id)
+        await coordinator.openReminder(token: "unavailable-synthetic-token")
+        menu.shown = false
+        coordinator.reopen()
+        XCTAssertNotNil(model.navigationMessage)
+        // Explicit menu opening continues to reset today and clear notification navigation.
+        menu.shown = false
+        coordinator.show()
+        XCTAssertNil(model.highlightedEventID)
+        XCTAssertNil(model.navigationMessage)
     }
 
     @MainActor func testColdAndWarmClickQueue() async {
@@ -264,4 +300,15 @@ private actor FailingNotifications: ReminderNotificationBackend {
     func add(_ request: ReminderRequest) async throws {}
     func remove(_ identifiers: [String]) async {}
     func deliveredIdentifiers() async -> [String] { [] }
+}
+
+@MainActor private final class LifecyclePresentation: CalendarPresenting {
+    var shown = false
+    let onOpen: () -> Void
+    init(onOpen: @escaping () -> Void) { self.onOpen = onOpen }
+    func show(resetToToday: Bool) {
+        guard !shown else { return }
+        if resetToToday { onOpen() }
+        shown = true
+    }
 }

@@ -5,10 +5,15 @@ import CalendarAccess
 import CalendarNotifications
 import MenuBar
 
+@MainActor protocol CalendarPresenting: AnyObject {
+    func show(resetToToday: Bool)
+}
+extension MenuBarController: CalendarPresenting {}
+
 @MainActor public final class CalendarAppCoordinator {
     private let model: CalendarModel
     private let login: LoginItemController
-    private let menu: MenuBarController
+    private let menu: any CalendarPresenting
     private let reminders: ReminderCoordinator
     private var qaWindow: NSWindow?
     private var startup: Task<Void, Never>?
@@ -56,8 +61,13 @@ import MenuBar
         startup = Task { [weak reminders] in await reminders?.refresh() }
         model.refresh()
     }
+    init(model: CalendarModel, login: LoginItemController, reminders: ReminderCoordinator, menu: any CalendarPresenting) {
+        self.model = model; self.login = login; self.reminders = reminders; self.menu = menu
+    }
     deinit { startup?.cancel() }
-    public func show() { menu.show() }
+    public func show() { menu.show(resetToToday: true) }
+    // AppKit can reopen during notification delivery; only the status button resets today.
+    public func reopen() { menu.show(resetToToday: false) }
     public func openReminder(token: String) async {
         // Open without resetting the selected date, both warm and cold.
         menu.show(resetToToday: false)
