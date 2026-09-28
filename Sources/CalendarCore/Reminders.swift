@@ -135,14 +135,28 @@ public struct ReminderRules: Codable, Equatable, Sendable {
         if !event.isRecurring {
             return rules.last { $0.scope == .thisOccurrence && $0.identity.matchesItem(event.reminderIdentity) }
         }
-        guard let anchor = event.reminderAnchor(context: context) else { return nil }
-        return resolve(identity: event.reminderIdentity, anchor: anchor)
+        if let override = rules.last(where: { $0.scope == .thisOccurrence && $0.identity.matchesOccurrenceItem(event.reminderIdentity) && event.matchesOriginalAnchor($0.anchor) }) { return override }
+        guard !needsIdentityConfirmation(event: event) else { return nil }
+        return rules.filter { rule in
+            guard rule.scope == .thisAndFuture, rule.identity.matchesSeries(event.reminderIdentity),
+                  let anchor = event.originalAnchor(matching: rule.anchor) else { return false }
+            return rule.anchor == anchor || rule.anchor.isBefore(anchor)
+        }.max { $0.anchor.isBefore($1.anchor) }
     }
     public mutating func removeOverride(event: EventOccurrence, context: CalendarContext) {
         if !event.isRecurring {
             rules.removeAll { $0.scope == .thisOccurrence && $0.identity.matchesItem(event.reminderIdentity) }
-        } else if let anchor = event.reminderAnchor(context: context) {
-            removeOverride(identity: event.reminderIdentity, anchor: anchor)
+        } else if let rule = resolve(event: event, context: context), rule.scope == .thisOccurrence {
+            removeOverride(identity: event.reminderIdentity, anchor: rule.anchor)
+        }
+    }
+    public func needsIdentityConfirmation(event: EventOccurrence) -> Bool {
+        // An exact override wins before a less precise series/civil rule.
+        if rules.contains(where: { $0.scope == .thisOccurrence && $0.identity.matchesOccurrenceItem(event.reminderIdentity) && event.matchesOriginalAnchor($0.anchor) }) { return false }
+        return rules.contains { rule in
+            guard rule.identity.matchesOccurrenceItem(event.reminderIdentity),
+                  let anchor = event.originalAnchor(matching: rule.anchor), event.ambiguousOriginalOccurrences.contains(anchor) else { return false }
+            return rule.scope == .thisOccurrence ? rule.anchor == anchor : rule.identity.matchesSeries(event.reminderIdentity) && (rule.anchor == anchor || rule.anchor.isBefore(anchor))
         }
     }
     public func resolve(identity: ReminderIdentity, anchor: OccurrenceAnchor) -> ReminderRule? {

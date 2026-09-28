@@ -35,9 +35,9 @@ struct ReminderDraft {
     var formatConfirmed = false
     var requiresFormatConfirmation: Bool { existing.map { $0.format != format } ?? false }
     var canUseFuture: Bool { event.isRecurring && event.confirmedSeriesKey != nil && occurrenceAnchor != nil }
-    init(event: EventOccurrence, existing: ReminderRule?, defaults: ReminderDefaults, context: CalendarContext) {
+    init(event: EventOccurrence, existing: ReminderRule?, defaults: ReminderDefaults, context: CalendarContext, needsIdentityConfirmation: Bool = false) {
         self.event = event; self.existing = existing
-        occurrenceAnchor = event.reminderAnchor(context: context)
+        occurrenceAnchor = needsIdentityConfirmation ? nil : (existing.flatMap { event.isRecurring ? event.originalAnchor(matching: $0.anchor) : $0.anchor } ?? event.reminderAnchor(context: context))
         let targetFormat: ReminderFormat = event.isAllDay ? .allDay : .timed
         format = targetFormat
         // Editing starts at this occurrence. A future change must be an explicit choice.

@@ -192,7 +192,7 @@ enum CalendarTab: String, CaseIterable { case calendar = "달력", upcoming = "�
         reminderEditingID = UUID()
         selectedReminderEvent = event
         reminderError = nil
-        reminderDraft = ReminderDraft(event: event, existing: reminders.settings.rules.resolve(event: event, context: calendar.context), defaults: reminders.settings.defaults, context: calendar.context)
+        reminderDraft = ReminderDraft(event: event, existing: reminders.settings.rules.resolve(event: event, context: calendar.context), defaults: reminders.settings.defaults, context: calendar.context, needsIdentityConfirmation: reminders.settings.rules.needsIdentityConfirmation(event: event))
     }
     func cancelReminder() { reminderEditingID = UUID(); selectedReminderEvent = nil; reminderDraft = nil; reminderError = nil }
     func saveReminder(enabled: Bool) async {

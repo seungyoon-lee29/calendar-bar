@@ -27,7 +27,7 @@ final class ReminderPersistenceTests: XCTestCase {
     }
 }
 
-import CalendarAccess
+@testable import CalendarAccess
 
 private final class MemoryReminderStorage: ReminderStorage, @unchecked Sendable {
     var value = ReminderSettings()
@@ -311,7 +311,8 @@ private actor NotificationFake: ReminderNotificationBackend {
         let calendar = CalendarFake(); let backend = NotificationFake()
         func occurrence(_ offset: TimeInterval, allDay: Bool = false, unknown: Bool = false) -> EventOccurrence {
             let start = now.addingTimeInterval(offset)
-            return EventOccurrence(calendarID: "cal", calendarName: "", color: RGBAColor(red: 0, green: 0, blue: 0), eventID: "series", title: "", start: start, end: start.addingTimeInterval(60), isAllDay: allDay, isRecurring: true, originalOccurrence: unknown ? nil : .timed(start), confirmedSeriesKey: "master")
+            let anchors = EventKitBackend.occurrenceAnchors(originalDate: unknown ? nil : start, isAllDay: allDay, context: CalendarContext(timeZone: .current))
+            return EventOccurrence(calendarID: "cal", calendarName: "", color: RGBAColor(red: 0, green: 0, blue: 0), eventID: "series", title: "", start: start, end: start.addingTimeInterval(60), isAllDay: allDay, isRecurring: true, originalOccurrence: anchors.first, confirmedSeriesKey: "master", originalOccurrenceAlternatives: Array(anchors.dropFirst()))
         }
         let a = occurrence(7200), b = occurrence(14400), c = occurrence(21600)
         calendar.items = [a,b,c]
@@ -324,6 +325,39 @@ private actor NotificationFake: ReminderNotificationBackend {
         let unknown = occurrence(21600, unknown: true); calendar.items = [a,b,unknown]; await model.refresh()
         XCTAssertEqual(model.scheduled, 4); XCTAssertEqual(model.snapshot(for: b).state, .scheduled)
         XCTAssertEqual(model.snapshot(for: unknown).state, .needsConfirmation)
+    }
+    func testAdapterCivilAmbiguityPurgesOldRequestsAndKeepsSafeOccurrence() async throws {
+        let calendar = CalendarFake(); let backend = NotificationFake()
+        let context = CalendarContext(timeZone: TimeZone(secondsFromGMT: 0)!)
+        let original = now.addingTimeInterval(3 * 86400)
+        func occurrence(_ date: Date, allDay: Bool) -> EventOccurrence {
+            let anchors = EventKitBackend.occurrenceAnchors(originalDate: date, isAllDay: allDay, context: context)
+            return EventOccurrence(calendarID: "cal", calendarName: "", color: .init(red: 0, green: 0, blue: 0), eventID: "series", title: "", start: date, end: date.addingTimeInterval(60), isAllDay: allDay, isRecurring: true, originalOccurrence: anchors.first, confirmedSeriesKey: "master", originalOccurrenceAlternatives: Array(anchors.dropFirst()))
+        }
+        let old = occurrence(original, allDay: true)
+        calendar.items = [old]
+        let model = coordinator(calendar, backend)
+        let civil = old.originalOccurrence!
+        let oldRule = try ReminderRule(identity: old.reminderIdentity, anchor: civil, scope: .thisOccurrence, format: .allDay, enabled: true, triggers: ReminderDefaults().allDay)
+        try await model.save(rule: oldRule, event: old)
+        let previous = await backend.pending(); XCTAssertFalse(previous.isEmpty)
+        await backend.markDelivered(previous.map(\.id))
+        let a = occurrence(original, allDay: false), b = occurrence(original.addingTimeInterval(60), allDay: false), safe = occurrence(original.addingTimeInterval(86400), allDay: false)
+        calendar.items = [a,b,safe]
+        let parent = try ReminderRule(identity: old.reminderIdentity, anchor: .timed(original), scope: .thisAndFuture, format: .timed, enabled: true, triggers: ReminderDefaults().timed)
+        try await model.save(rule: parent, event: a)
+        XCTAssertEqual(model.snapshot(for: a).state, .needsConfirmation)
+        XCTAssertEqual(model.snapshot(for: b).state, .needsConfirmation)
+        XCTAssertEqual(model.snapshot(for: safe).state, .scheduled)
+        XCTAssertEqual(model.scheduled, 2)
+        let pending = await backend.pending(), delivered = await backend.deliveredIdentifiers()
+        XCTAssertTrue(Set(pending.map(\.id)).isDisjoint(with: previous.map(\.id)))
+        XCTAssertTrue(delivered.isEmpty)
+        let off = try ReminderRule(id: oldRule.id, identity: old.reminderIdentity, anchor: civil, scope: .thisOccurrence, format: .allDay, enabled: false, triggers: [])
+        try await model.save(rule: off, event: old)
+        XCTAssertEqual(model.snapshot(for: a).state, .needsConfirmation)
+        XCTAssertEqual(model.snapshot(for: safe).state, .scheduled)
+        XCTAssertEqual(model.scheduled, 2)
     }
     func testReviewDeliveredOccurrenceUsesCurrentOverrideAndDeletion() async throws {
         let calendar = CalendarFake(); let backend = NotificationFake()

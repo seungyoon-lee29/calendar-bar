@@ -1,6 +1,6 @@
 import XCTest
 import CalendarCore
-import CalendarAccess
+@testable import CalendarAccess
 import CalendarNotifications
 @testable import CalendarUI
 
@@ -71,6 +71,28 @@ final class ReminderIntegrationTests: XCTestCase {
         await model.routeReminder(token: token)
         XCTAssertNotNil(model.navigationMessage)
         XCTAssertNil(model.selectedReminderEvent)
+    }
+    @MainActor func testAmbiguousConvertedOccurrenceCannotCreateNewOverride() async throws {
+        let now = Date()
+        let context = CalendarContext(timeZone: .current)
+        let anchors = EventKitBackend.occurrenceAnchors(originalDate: now, isAllDay: false, context: context)
+        var event = EventOccurrence(calendarID: "qa-calendar", calendarName: "", color: .init(red: 0, green: 0, blue: 0), eventID: "series", title: "", start: now, end: now.addingTimeInterval(3600), isAllDay: false, isRecurring: true, originalOccurrence: anchors.first, confirmedSeriesKey: "series", originalOccurrenceAlternatives: Array(anchors.dropFirst()))
+        let civil = anchors[1]
+        event.ambiguousOriginalOccurrences.insert(civil)
+        let old = try ReminderRule(identity: event.reminderIdentity, anchor: civil, scope: .thisOccurrence, format: .allDay, enabled: false, triggers: [])
+        let storage = VolatileReminderStorage()
+        var saved = ReminderSettings(); try saved.rules.replace(with: old); try storage.save(saved)
+        let access = CalendarAccessController(backend: QACalendarBackend(now: now), storage: QASelection(), observeChanges: false)
+        let reminders = ReminderCoordinator(access: access, storage: storage, backend: QANotifications(), observeChanges: false)
+        let model = CalendarModel(access: access, reminders: reminders)
+        model.refresh(); await model.waitForRefresh()
+        model.editReminder(event)
+        let draft = try XCTUnwrap(model.reminderDraft)
+        XCTAssertNil(draft.occurrenceAnchor)
+        XCTAssertFalse(draft.canUseFuture)
+        XCTAssertThrowsError(try draft.rule(enabled: true))
+        XCTAssertThrowsError(try draft.rule(enabled: false))
+        XCTAssertEqual(reminders.settings.rules.rules, [old])
     }
     @MainActor func testSelectionAndPermissionLossClearPrivateEditor() async throws {
         let backend = MutableReminderCalendar()

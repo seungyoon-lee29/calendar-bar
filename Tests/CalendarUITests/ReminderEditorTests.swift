@@ -1,6 +1,6 @@
 import XCTest
 import CalendarCore
-import CalendarAccess
+@testable import CalendarAccess
 import CalendarNotifications
 @testable import CalendarUI
 
@@ -50,6 +50,25 @@ final class ReminderEditorTests: XCTestCase {
         draft.formatConfirmed = true
         XCTAssertEqual(try draft.rule(enabled: true).format, .allDay)
         XCTAssertEqual(try draft.rule(enabled: true).anchor, existing.anchor)
+    }
+    func testAdapterFormatConversionsPreserveSavedIDAndAnchor() throws {
+        let original = Date(timeIntervalSince1970: 2_000_000_000)
+        for allDay in [true, false] {
+            let anchors = EventKitBackend.occurrenceAnchors(originalDate: original, isAllDay: allDay, context: context)
+            let event = EventOccurrence(calendarID: "cal", calendarName: "", color: .init(red: 0, green: 0, blue: 0), eventID: "event", title: "", start: original, end: original.addingTimeInterval(3600), isAllDay: allDay, isRecurring: true, originalOccurrence: anchors.first, confirmedSeriesKey: "series", originalOccurrenceAlternatives: Array(anchors.dropFirst()))
+            let format: ReminderFormat = allDay ? .timed : .allDay
+            let oldAnchor = EventKitBackend.occurrenceAnchors(originalDate: original, isAllDay: !allDay, context: context)[0]
+            let old = try ReminderRule(identity: event.reminderIdentity, anchor: oldAnchor, scope: .thisOccurrence, format: format, enabled: false, triggers: [])
+            var rules = ReminderRules(rules: [old])
+            var draft = ReminderDraft(event: event, existing: rules.resolve(event: event, context: context), defaults: ReminderDefaults(), context: context)
+            XCTAssertTrue(draft.requiresFormatConfirmation)
+            XCTAssertThrowsError(try draft.rule(enabled: true))
+            draft.formatConfirmed = true
+            let saved = try draft.rule(enabled: true)
+            XCTAssertEqual(saved.id, old.id); XCTAssertEqual(saved.anchor, old.anchor)
+            try rules.replace(with: saved)
+            XCTAssertEqual(rules.rules.count, 1)
+        }
     }
     private var context: CalendarContext { CalendarContext(timeZone: TimeZone(secondsFromGMT: 0)!) }
     private func sample(recurring: Bool = false, allDay: Bool = false) -> EventOccurrence {

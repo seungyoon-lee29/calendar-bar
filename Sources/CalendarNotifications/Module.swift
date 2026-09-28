@@ -192,6 +192,7 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
     }
     public func snapshot(for event: EventOccurrence) -> ReminderDeliverySnapshot {
         if let value = eventSnapshots[event.id] { return value }
+        if settings.rules.needsIdentityConfirmation(event: event) { return ReminderDeliverySnapshot(desiredEnabled: true, state: .needsConfirmation) }
         guard let rule = settings.rules.resolve(event: event, context: context) else { return ReminderDeliverySnapshot(desiredEnabled: false, state: .noFuture) }
         return snapshots[rule.id] ?? ReminderDeliverySnapshot(desiredEnabled: rule.enabled, state: .updating)
     }
@@ -305,7 +306,7 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
             return
         }
 
-        var events = query.events
+        var events = EventOccurrence.markingAmbiguousOriginalDates(query.events)
         var unsafeRules: Set<UUID> = []
         var unsafeKeys: Set<OccurrenceKey> = []
         var failed: Set<UUID> = []
@@ -325,16 +326,17 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
             case .missing, .outsideSelectedScope, .connectionRequired: invalidKeys.insert(key)
             }
         }
+        events = EventOccurrence.markingAmbiguousOriginalDates(events)
         var desired: [String: ReminderRequest] = [:]
         var links = saved.links
-        let knownKeys = Set(events.compactMap { event -> OccurrenceKey? in
-            guard let anchor = event.reminderAnchor(context: context) else { return nil }
-            return OccurrenceKey(event.reminderIdentity, anchor)
+        let knownKeys = Set(events.flatMap { event -> [OccurrenceKey] in
+            let anchors = [event.reminderAnchor(context: context)].compactMap { $0 } + event.originalOccurrenceAlternatives
+            return anchors.filter { !event.ambiguousOriginalOccurrences.contains($0) }.map { OccurrenceKey(event.reminderIdentity, $0) }
         })
         var unsafeEvents: Set<EventOccurrence.ID> = []
         for event in events {
-            if event.isRecurring && event.originalOccurrence == nil {
-                let applicable = saved.rules.rules.filter { $0.identity.matchesOccurrenceItem(event.reminderIdentity) && $0.enabled }
+            if (event.isRecurring && event.originalOccurrence == nil) || saved.rules.needsIdentityConfirmation(event: event) {
+                let applicable = saved.rules.rules.filter { $0.identity.matchesOccurrenceItem(event.reminderIdentity) }
                 guard !applicable.isEmpty else { continue }
                 unsafeEvents.insert(event.id)
                 for rule in applicable { unsafeRules.insert(rule.id) }
@@ -343,7 +345,7 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
                 continue
             }
             guard let rule = saved.rules.resolve(event: event, context: context), rule.enabled else { continue }
-            guard let anchor = event.isRecurring ? event.reminderAnchor(context: context) : Optional(rule.anchor) else { continue }
+            guard let anchor = event.isRecurring ? event.originalAnchor(matching: rule.anchor) : Optional(rule.anchor) else { continue }
             let key = OccurrenceKey(event.reminderIdentity, anchor)
             switch ReminderCalculator.calculate(rule: rule, event: event, now: currentTime, context: context) {
             case .needsFormatConfirmation, .invalidDate:
@@ -427,7 +429,7 @@ public struct ReminderDeliverySnapshot: Equatable, Sendable {
         for event in events {
             if unsafeEvents.contains(event.id) { eventSnapshots[event.id] = ReminderDeliverySnapshot(desiredEnabled: true, state: .needsConfirmation); continue }
             guard let rule = saved.rules.resolve(event: event, context: context) else { continue }
-            let anchor = event.isRecurring ? event.reminderAnchor(context: context) : rule.anchor
+            let anchor = event.isRecurring ? event.originalAnchor(matching: rule.anchor) : rule.anchor
             if let anchor, unsafeKeys.contains(OccurrenceKey(event.reminderIdentity, anchor)) {
                 eventSnapshots[event.id] = ReminderDeliverySnapshot(desiredEnabled: rule.enabled, state: .needsConfirmation)
                 continue
