@@ -1,6 +1,7 @@
 import Foundation
 
-/// Keeps a user request alive briefly while AppKit activates and attaches the status item.
+/// Keeps a user request alive briefly while AppKit attaches the status item.
+/// Accessory apps can remain inactive without a window: show first, then request activation.
 /// Cancellation and a fixed attempt limit prevent a hidden app from reopening much later.
 @MainActor final class PopoverPresentation {
     private var task: Task<Void, Never>?
@@ -15,17 +16,17 @@ import Foundation
     }
     deinit { task?.cancel() }
 
-    func request(activate: () -> Void, attempt: @escaping () -> Bool) {
+    func request(activate: @escaping () -> Void, attempt: @escaping () -> Bool) {
         cancel()
-        activate()
-        guard !attempt(), maximumAttempts > 1 else { return }
+        if attempt() { activate(); return }
+        guard maximumAttempts > 1 else { return }
         let wait = wait
         let maximumAttempts = maximumAttempts
         task = Task {
             for _ in 1..<maximumAttempts {
                 do { try await wait() } catch { return }
                 guard !Task.isCancelled else { return }
-                if attempt() { return }
+                if attempt() { activate(); return }
             }
         }
     }

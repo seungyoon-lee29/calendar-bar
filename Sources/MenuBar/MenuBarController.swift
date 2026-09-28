@@ -81,14 +81,13 @@ public final class MenuBarController: NSObject, NSPopoverDelegate {
     /// Notification navigation has already selected its destination.
     public func show(resetToToday: Bool = true) {
         QAClickTrace.record(.showRequested)
-        presentation.request(activate: { NSApp.activate(ignoringOtherApps: true) }) { [weak self] in
+        presentation.request(activate: { NSApp.activate() }) { [weak self] in
             self?.attemptPresentation(resetToToday: resetToToday) ?? true
         }
     }
 
     private func attemptPresentation(resetToToday: Bool) -> Bool {
         if popover.isShown { return true }
-        guard NSApp.isActive else { QAClickTrace.record(.waitingActivation); return false }
         statusItem.isVisible = true
         guard let button = statusItem.button, let window = button.window, window.isVisible,
               !button.isHiddenOrHasHiddenAncestor else { QAClickTrace.record(.waitingAnchor); return false }
