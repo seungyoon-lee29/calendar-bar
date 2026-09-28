@@ -61,3 +61,5 @@ Apple 캘린더에서 같은 Google 캘린더의 9/29 일정 개수·제목·시
 | 화면 없는 팝오버 기준점 | `Sources/MenuBar/MenuBarController.swift:81` |
 | 외부 클릭·비활성화 닫기 | `Sources/MenuBar/MenuBarController.swift:91` |
 | 최초 notFound 상태 등록 | `Sources/MenuBar/LoginItemController.swift:78` |
+
+최종 설치본 권한 허용 후 추가 확인: 사용자가 시스템 허용을 마쳤고, 앱에서 Google 기본 캘린더의 2026-09-29 일정 2개를 다시 읽는 것을 확인했다. 이제 권한 허용 대기 상태는 해소됐다. 바깥 클릭의 사용자 실제 화면 확인은 별도다.
