@@ -74,7 +74,8 @@ public final class LoginItemController: ObservableObject {
         guard automaticallyRegister, !store.hasInitializedLoginItem else { return }
         // Mark the attempt before registration, including failure/approval, to respect later opt-out.
         store.hasInitializedLoginItem = true
-        if state == .disabled { setEnabled(true) }
+        // A fresh installed app can report notFound before its first registration.
+        if state != .enabled && state != .requiresApproval { setEnabled(true) }
     }
 
     public func refresh() {
