@@ -140,7 +140,7 @@ Runtime QA의 `~/Library/Application Support/local.ian.CalendarBar.runtime.qa/qa
 
 ### 팝오버 우선 표시 수정 이후의 후속 검증
 
-[인계 문서](../.dryforge/002/handoff.md)의 구현 진행 체크포인트에 따라, 같은 식별자의 오래된 QA 진단 번들을 등록 해제하고 백업 후 제거했다. 활성화를 먼저 기다리던 경로는 유효한 팝오버를 먼저 표시한 뒤 활성화를 요청하도록 수정했다. Orca 꺼짐에서 실제 QA 팝오버와 showSucceeded는 확인됐으나 이는 알림 클릭 성공 증거가 아니다. 수명·재열기 제한은 [구현 주의점](engineering-notes.md)에 기록돼 있다.
+같은 식별자의 오래된 QA 진단 번들을 등록 해제하고 백업 후 제거했다. 활성화를 먼저 기다리던 경로는 유효한 팝오버를 먼저 표시한 뒤 활성화를 요청하도록 수정했다. Orca 꺼짐에서 실제 QA 팝오버와 showSucceeded는 확인됐으나 이는 알림 클릭 성공 증거가 아니다.
 
 보존 로그 `.dryforge/window-first-integrated-clean.log`를 이번 문서 갱신에서 직접 읽었다. 2026-09-28 18:01 실행의 Swift 116개·실패 0, Python 9개·OK, Swift/Python/build 세 단계의 EXIT 0을 확인했다. build 단계는 release 번들·서명 검증을 포함한다. 앞선 108개/5개와 113개/5개 기록은 각각 과거 실행이며 수치를 합산하지 않는다. 이 로그에는 실행 SHA가 고정돼 있지 않으므로 현재 HEAD 또는 후속 진단 제거 변경까지 검증됐다고 확대하지 않는다. 문서 담당자는 보존 로그를 읽었으며, 메인 검증자의 후속 통합 실행 결과는 아래에 별도로 기록한다.
 
