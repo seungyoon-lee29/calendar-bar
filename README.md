@@ -30,3 +30,5 @@ open build/CalendarBar.app
 - `--smoke` 실행은 자동 로그인 항목 등록을 건너뜁니다. 실제 캘린더 연결은 사용자 버튼 동작으로만 요청합니다. 테스트용 예시 일정은 제품에 포함하지 않습니다.
 
 [검증 기록](docs/verification.md)
+
+현재 설치본은 `~/Applications/CalendarBar.app`에 있습니다. 개발 중 맥이 이 앱을 실행 도구의 메뉴막대 항목으로 묶었다면 시스템 설정 → 메뉴 막대에서 해당 항목과 CalendarBar 표시를 확인하세요.
