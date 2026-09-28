@@ -1,8 +1,17 @@
 """QA launch identity checks; inventory reads only public NSWorkspace APIs."""
 import json
+import os
 import pathlib
 import subprocess
 import sys
+
+
+def launch_environment(source=None):
+    """Preserve existing OS/locale values without forwarding tool credentials."""
+    source = os.environ if source is None else source
+    allowed = ('PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL',
+               'LC_CTYPE', 'LC_MESSAGES', 'LC_COLLATE', 'LC_MONETARY', 'LC_NUMERIC', 'LC_TIME')
+    return {key: source[key] for key in allowed if key in source}
 
 
 def inventory(bundle_id):

@@ -58,6 +58,24 @@ class GroupProbeTests(unittest.TestCase):
 
 
 class QAPreflightTests(unittest.TestCase):
+    def test_launcher_passes_only_standard_environment(self):
+        import plistlib
+        import runpy
+        info = {'CFBundleIdentifier': 'local.ian.CalendarBar.qa', 'CFBundleExecutable': 'CalendarBar'}
+        standard = {'PATH': '/usr/bin:/bin', 'HOME': '/tmp/fake-home', 'USER': 'fake-user', 'LOGNAME': 'fake-user', 'TMPDIR': '/tmp/fake-temp', 'LANG': 'en_US.UTF-8', 'LC_CTYPE': 'UTF-8'}
+        inherited = dict(standard, SECRET_VARIABLE='fake-sentinel', API_KEY='fake-key', DYLD_INSERT_LIBRARIES='fake-injection')
+        with tempfile.TemporaryDirectory() as directory:
+            app = pathlib.Path(directory) / 'QA.app'
+            (app / 'Contents').mkdir(parents=True)
+            (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+            with patch.object(sys, 'argv', ['run_qa.py', '1', str(app)]), patch.dict(os.environ, inherited, clear=True), patch('qa_preflight.preflight'), patch('subprocess.Popen') as launch, patch('subprocess.check_output', return_value=''):
+                launch.return_value.wait.return_value = 0
+                with self.assertRaises(SystemExit) as result:
+                    runpy.run_path(str(RUNNER.with_name('run_qa.py')))
+                self.assertEqual(result.exception.code, 0)
+                self.assertEqual(launch.call_args.kwargs.get('env'), standard)
+                self.assertNotIn('SECRET_VARIABLE', launch.call_args.kwargs.get('env', {}))
+
     def test_inventory_contract(self):
         from qa_preflight import validate
         app = pathlib.Path('/tmp/qa-preflight/QA.app')
