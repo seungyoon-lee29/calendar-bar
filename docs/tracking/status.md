@@ -16,3 +16,5 @@
 초기 클릭 대기 중 보존했던 canonical Runtime QA는 클릭 확인 후 종료하고 최종 진단 제거 실행 파일로 교체해 ad-hoc 서명·검증했다. 최종 코드의 실제 QA 화면과 OS 목록에서 알림 끄기, 내용 숨김에 따른 표시 알림 제거, 캘린더 선택 해제·재선택, QA 알림 권한 거절 후 예약 정리를 확인했다. QA 알림 허용은 시험 전 꺼짐으로 복원했고 활성 규칙 0개·내용 숨김 false·QA launch notifications=false·OS pending/delivered 0/0을 확인했다. 정확한 QA 프로세스를 종료한 뒤 제한 실행 도구 exit 0과 QA_PROCESS_ABSENT를 확인했다. 이 QA 검증 단계에서는 실사용 설치본 파일·원본 일정·로그인 설정·다른 앱 권한을 변경하지 않았다. 실제 캘린더 fullAccess 회수, 최초 권한 요청 오류 원인, 최소 지원 macOS 14의 실제 동작은 미검증·미해결로 남는다.
 
 2026-09-28 사용자 승인 후 기존 `/Users/ian/Applications/CalendarBar.app`을 권한 0600 ZIP으로 백업하고 검증된 빌드로 교체했다. 설치 실행 파일과 빌드 실행 파일의 SHA-256 동등성 및 서명 검증 exit 0을 확인했다. 기존 PID 61441 종료 후 새 PID 66871 한 개가 실행됐고, 해당 PID의 ControlCenter 추적·displayable 생성·메뉴 추가와 blocked 0을 확인했다. 개인 일정 화면은 조회하지 않았으므로 교체 후 캘린더 권한 유지·실제 계정 화면 확인을 추가 성공으로 보고하지 않는다.
+
+2026-09-29 앱 아이콘(종이 달력: 파란 머리띠·점 격자·오늘 원·일정 점)을 추가했다. `scripts/make_icon.swift`가 그리고 `Resources/AppIcon.icns`를 번들에 넣는다. 메뉴막대의 날짜 아이콘은 바꾸지 않았다. 사용자 승인 후 설치본을 `.dryforge/backup/CalendarBar-before-icon-20260929-105054.zip`(0600)으로 백업하고 교체했다. 알림 배너·로그인 항목에 새 아이콘이 보이는지는 미확인이다.

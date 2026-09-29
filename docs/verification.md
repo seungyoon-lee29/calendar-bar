@@ -184,3 +184,5 @@ Cmd-Q로 QA가 종료되지 않아 정확한 QA 실행 경로의 PID에 SIGTERM�
 기존 `/Users/ian/Applications/CalendarBar.app`은 `.dryforge/backup/CalendarBar-before-reminders-20260928-221151.zip`에 권한 0600으로 백업했다. 기존 정상 앱 PID 61441을 정상 종료한 뒤 검증된 빌드로 교체했고, 빌드 실행 파일과 설치 실행 파일의 SHA-256 내부 동등성 true 및 codesign 검증 exit 0을 확인했다. 정리된 환경으로 open 실행 후 새 정상 앱 PID 66871 한 개가 실행됐다.
 
 ControlCenter 로그는 PID 66871만 필터링한 JSON에서 메타데이터를 확인했다. tracking 1·displayableCreated 1·itemAdded 1·blocked 0, 조회 exit 0이었다. 이는 새 설치본의 실행과 메뉴 등록 증거이며 개인 일정 화면·캘린더 권한 유지 확인과는 구별한다. 개인 일정 화면은 조회하지 않았다. 앞서 명시한 실제 계정 반복 예외·실제 캘린더 권한 회수·최초 알림 권한 요청 원인·macOS 14·재로그인 등의 한계는 유지한다. 이번 갱신은 설치 결과 문서화이며 문서 링크·diff를 확인했다.
+
+2026-09-29 앱 아이콘 추가 후 `python3 scripts/verify.py` 전체 exit 0을 확인했다. `NSWorkspace.icon(forFile:)`로 빌드·설치본 번들의 아이콘을 렌더해 새 디자인이 해석되고 macOS 26의 회색 판 덧씌움이 없음을 확인했다. 설치본은 기존 PID 66871을 정상 종료 후 교체했고 실행 파일·아이콘의 SHA-256이 빌드와 같고 codesign 검증 exit 0, 재실행 PID 89114 한 개와 직후 1분 ControlCenter blocked 0을 확인했다. 알림 배너·로그인 항목의 실제 아이콘 표시와 개인 일정 화면은 확인하지 않았다.

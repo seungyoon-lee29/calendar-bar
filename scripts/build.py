@@ -10,10 +10,12 @@ app = root / "build/CalendarBar.app"
 macos = app / "Contents/MacOS"
 macos.mkdir(parents=True, exist_ok=True)
 shutil.copy2(pathlib.Path(bindir) / "CalendarBar", macos / "CalendarBar")
+(app / "Contents/Resources").mkdir(exist_ok=True)
+shutil.copy2(root / "Resources/AppIcon.icns", app / "Contents/Resources/AppIcon.icns")
 info = {
     "CFBundleExecutable": "CalendarBar", "CFBundleIdentifier": "local.ian.CalendarBar",
     "CFBundleName": "CalendarBar", "CFBundleDisplayName": "캘린더 바",
-    "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "CFBundleShortVersionString": "1.0",
+    "CFBundlePackageType": "APPL", "CFBundleIconFile": "AppIcon", "CFBundleVersion": "1", "CFBundleShortVersionString": "1.0",
     "LSMinimumSystemVersion": "14.0", "LSUIElement": True,
     "NSHighResolutionCapable": True,
     "NSCalendarsFullAccessUsageDescription": "선택한 캘린더의 일정을 읽어서 표시합니다. 일정을 추가하거나 수정하지 않습니다.",
